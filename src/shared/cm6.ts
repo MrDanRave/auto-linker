@@ -170,7 +170,7 @@ function makeTooltipForId(
         // Button order: approve (✓), reject (✗), eye
         const approve = row.createEl("button", { cls: "auto-linker-btn auto-linker-btn-approve", text: "✓" });
         const reject  = row.createEl("button", { cls: "auto-linker-btn auto-linker-btn-reject",  text: "✗" });
-        const eye     = row.createEl("button", { cls: "auto-linker-btn auto-linker-btn-eye",     attr: { "aria-label": "Peek note" } });
+        const eye     = row.createEl("button", { cls: "auto-linker-btn auto-linker-btn-eye" });
         setIcon(eye, "eye"); // outline (Lucide) icon, not an emoji
 
         const noFocus = (e: MouseEvent) => e.preventDefault();
@@ -237,6 +237,8 @@ function makeTooltipForId(
           cancelPeekHide();
           if (peek) return;
           const doc = eye.ownerDocument;
+          // Insurance: never leave a stray peek behind from a prior tooltip.
+          doc.body.querySelectorAll(".auto-linker-peek").forEach((e) => e.remove());
           peek = doc.body.createDiv({ cls: "auto-linker-peek" });
           peek.createDiv({ cls: "auto-linker-peek-kink" });
           const content = peek.createDiv({ cls: "auto-linker-peek-content" });
@@ -474,6 +476,12 @@ export function injectCM6Styles(doc: Document) {
     .auto-linker-peek-content button,
     .auto-linker-peek-content .copy-code-button,
     .auto-linker-peek-content .edit-block-button { display: none !important; }
+    /* Make links inert so hovering them can't trigger Obsidian's own
+       page-preview popover behind our peek. */
+    .auto-linker-peek-content a,
+    .auto-linker-peek-content .internal-link,
+    .auto-linker-peek-content .external-link,
+    .auto-linker-peek-content .tag { pointer-events: none; }
 
     /* Kink — points up at the eye by default (peek below), flips down when
        the peek is rendered above the eye. Its left is set inline. */
