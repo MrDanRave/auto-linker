@@ -454,7 +454,7 @@ async function renderPreview(
   if (!(file instanceof TFile)) { el.setText("(note not found)"); return; }
 
   const content = await app.vault.cachedRead(file);
-  const excerpt = content.split("\n").slice(0, 12).join("\n").trim() || "(empty note)";
+  const excerpt = content.split("\n").slice(0, 5).join("\n").trim() || "(empty note)";
 
   el.empty();
   // MarkdownRenderer.render is the modern API; fall back to renderMarkdown.
@@ -689,27 +689,46 @@ export function injectAutoLinkerStyles(doc: Document) {
       font-style: italic;
       margin: 4px 0 4px 12px;
     }
-    /* Collapsible reject groups — styled to sit naturally in the settings tab */
-    .auto-linker-reject-details { margin: 2px 0; }
-    .auto-linker-reject-details > summary {
+    /* Collapsible reject groups — custom inline disclosure triangle so the
+       marker aligns with the heading text instead of protruding into the
+       left gutter. */
+    .auto-linker-reject-details { margin: 0; }
+    .auto-linker-reject-details > summary,
+    .auto-linker-reject-subdetails > summary {
       cursor: pointer;
+      list-style: none;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+    }
+    .auto-linker-reject-details > summary::-webkit-details-marker,
+    .auto-linker-reject-subdetails > summary::-webkit-details-marker { display: none; }
+    .auto-linker-reject-details > summary::before,
+    .auto-linker-reject-subdetails > summary::before {
+      content: "";
+      flex: 0 0 auto;
+      border: 5px solid transparent;
+      border-left-color: var(--text-muted);
+      transition: transform 0.15s ease;
+    }
+    .auto-linker-reject-details[open] > summary::before,
+    .auto-linker-reject-subdetails[open] > summary::before { transform: rotate(90deg); }
+
+    .auto-linker-reject-details > summary {
       padding: 10px 0;
       font-weight: var(--font-semibold, 600);
       color: var(--text-normal);
       border-top: 1px solid var(--background-modifier-border);
-      list-style-position: inside;
     }
-    .auto-linker-reject-subdetails { margin-left: 14px; }
+    .auto-linker-reject-subdetails { margin-left: 18px; }
     .auto-linker-reject-subdetails > summary {
-      cursor: pointer;
       padding: 8px 0;
       color: var(--text-muted);
-      list-style-position: inside;
     }
-    /* Settings reject rows reuse Obsidian's native .setting-item look; just
-       give the empty-state and indentation a little room. */
-    .auto-linker-reject-details .setting-item { border-top: none; padding: 8px 0; }
-    .auto-linker-reject-subdetails .setting-item { padding-left: 4px; }
+    /* Reject rows reuse Obsidian's native .setting-item look, indented under
+       their group's disclosure triangle. */
+    .auto-linker-reject-details  .setting-item { border-top: none; padding: 8px 0 8px 18px; }
+    .auto-linker-reject-details  .auto-linker-settings-empty { padding-left: 18px; }
   `;
   doc.head.appendChild(style);
 }

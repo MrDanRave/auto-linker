@@ -167,48 +167,98 @@ function makeTooltipForId(
         const row = dom.createEl("div", { cls: "auto-linker-tooltip-row" });
         row.createEl("span", { cls: "auto-linker-target-label", text: `→ ${targetName}` });
 
-        const eye     = row.createEl("button", { cls: "auto-linker-btn auto-linker-btn-eye",     attr: { "aria-label": "Preview note" } });
+        // Button order: approve (✓), reject (✗), eye
         const approve = row.createEl("button", { cls: "auto-linker-btn auto-linker-btn-approve", text: "✓" });
         const reject  = row.createEl("button", { cls: "auto-linker-btn auto-linker-btn-reject",  text: "✗" });
-
-        // Outline (Lucide) eye icon — not an emoji
-        setIcon(eye, "eye");
-
-        const preview = dom.createEl("div", { cls: "auto-linker-preview" });
+        const eye     = row.createEl("button", { cls: "auto-linker-btn auto-linker-btn-eye",     attr: { "aria-label": "Peek note" } });
+        setIcon(eye, "eye"); // outline (Lucide) icon, not an emoji
 
         const noFocus = (e: MouseEvent) => e.preventDefault();
-        eye.addEventListener("mousedown",     noFocus);
         approve.addEventListener("mousedown", noFocus);
         reject.addEventListener("mousedown",  noFocus);
-
-        // Eye hover: expand preview pane and render the note markdown once
-        let previewLoaded = false;
-        eye.addEventListener("mouseenter", async () => {
-          preview.style.display = "block";
-          if (!previewLoaded) {
-            previewLoaded = true;
-            preview.setText("Loading…");
-            try {
-              preview.empty();
-              await callbacks.onPreview(targetPath, preview);
-            } catch {
-              preview.setText("(could not load preview)");
-            }
-          }
-        });
-        // Eye click: open the note
-        eye.addEventListener("click", () => callbacks.onOpen(targetPath));
+        eye.addEventListener("mousedown",     noFocus);
 
         approve.addEventListener("click", () => callbacks.onApprove(hit.meta));
         reject.addEventListener("click",  () => callbacks.onReject(hit.meta));
 
+        // ── Peek: a separate floating window anchored to the eye button. Kept
+        // independent of this CM tooltip so showing it never resizes or
+        // repositions the tooltip (which used to shift the eye out from under
+        // the cursor and flip the whole tooltip above/below at random).
+        let peek: HTMLElement | null = null;
+        let peekHideTimer: ReturnType<typeof setTimeout> | null = null;
+
+        const removePeek = () => {
+          if (peekHideTimer !== null) { clearTimeout(peekHideTimer); peekHideTimer = null; }
+          peek?.remove();
+          peek = null;
+        };
+        const cancelPeekHide = () => {
+          if (peekHideTimer !== null) { clearTimeout(peekHideTimer); peekHideTimer = null; }
+        };
+        const schedulePeekHide = () => {
+          if (peekHideTimer !== null) return;
+          peekHideTimer = setTimeout(removePeek, 160);
+        };
+
+        const positionPeek = () => {
+          if (!peek) return;
+          const win = eye.ownerDocument.defaultView;
+          if (!win) return;
+          const r   = eye.getBoundingClientRect();
+          const pw  = peek.offsetWidth;
+          const ph  = peek.offsetHeight;
+          const gap = 9;
+          const eyeCenterX = r.left + r.width / 2;
+
+          let left = eyeCenterX - pw / 2;
+          left = Math.max(8, Math.min(left, win.innerWidth - pw - 8));
+
+          let above = false;
+          let top: number;
+          if (r.bottom + gap + ph <= win.innerHeight) {
+            top = r.bottom + gap;                  // default: below the eye
+          } else if (r.top - gap - ph >= 0) {
+            top = r.top - gap - ph; above = true;  // flip above only if needed
+          } else {
+            top = r.bottom + gap;                  // neither fits cleanly → below
+          }
+
+          peek.style.left = `${left}px`;
+          peek.style.top  = `${top}px`;
+          peek.classList.toggle("auto-linker-peek--above", above);
+
+          // Kink points back at the eye even after horizontal clamping
+          const kink = peek.querySelector(".auto-linker-peek-kink") as HTMLElement | null;
+          if (kink) kink.style.left = `${Math.max(12, Math.min(eyeCenterX - left, pw - 12))}px`;
+        };
+
+        const showPeek = () => {
+          cancelPeekHide();
+          if (peek) return;
+          const doc = eye.ownerDocument;
+          peek = doc.body.createDiv({ cls: "auto-linker-peek" });
+          peek.createDiv({ cls: "auto-linker-peek-kink" });
+          const content = peek.createDiv({ cls: "auto-linker-peek-content" });
+          peek.addEventListener("mouseenter", cancelPeekHide);
+          peek.addEventListener("mouseleave", schedulePeekHide);
+
+          const done = callbacks.onPreview(targetPath, content)
+            .catch(() => { content.setText("(could not load preview)"); });
+          requestAnimationFrame(positionPeek);
+          done.finally(() => positionPeek());
+        };
+
+        eye.addEventListener("mouseenter", showPeek);
+        eye.addEventListener("mouseleave", schedulePeekHide);
+        eye.addEventListener("click", () => { removePeek(); callbacks.onOpen(targetPath); });
+
         return {
           dom,
-          // Tag CodeMirror's wrapper element directly so our theme reset and
-          // arrow-hide don't depend on the :has() selector matching.
-          mount() {
-            dom.parentElement?.classList.add("auto-linker-cm-wrap");
-          },
+          // Tag CodeMirror's wrapper directly so the theme reset + arrow-hide
+          // don't depend on the :has() selector matching.
+          mount() { dom.parentElement?.classList.add("auto-linker-cm-wrap"); },
+          destroy() { removePeek(); },
         };
       },
     },
@@ -259,7 +309,7 @@ export function createSuggestionTooltip(field: SuggestionField, callbacks: Widge
         const target = e.target as HTMLElement | null;
         if (!target || !target.closest) return;
 
-        if (target.closest(".auto-linker-tooltip")) { this.cancelHide(); return; }
+        if (target.closest(".auto-linker-tooltip") || target.closest(".auto-linker-peek")) { this.cancelHide(); return; }
 
         const mark    = target.closest(".auto-linker-suggestion") as HTMLElement | null;
         const id      = mark?.getAttribute("data-deco-id") ?? null;
@@ -395,31 +445,52 @@ export function injectCM6Styles(doc: Document) {
     .auto-linker-btn-eye svg { width: 14px; height: 14px; }
     .auto-linker-btn-eye:hover { background: var(--interactive-accent); color: #fff; }
 
-    /* Preview pane — rendered markdown, wraps + scrolls instead of clipping */
-    .auto-linker-preview {
-      display: none;
-      width: 100%;
-      max-height: 180px;
-      overflow-y: auto;
+    /* Peek — a detached, manually-positioned speech bubble anchored to the eye */
+    .auto-linker-peek {
+      position: fixed;
+      z-index: 1001;
+      width: 280px;
+      background: var(--background-secondary);
+      color: var(--text-normal);
+      border: 1px solid var(--background-modifier-border);
+      border-radius: 6px;
+      box-shadow: 0 2px 14px rgba(0,0,0,0.4);
+      padding: 8px 10px;
+    }
+    .auto-linker-peek-content {
+      max-height: 7.5em;          /* ~5 lines at 1.5 line-height */
+      overflow: hidden;
+      font-size: 12px;
+      line-height: 1.5;
       overflow-wrap: anywhere;
       white-space: normal;
-      border-top: 1px solid var(--background-modifier-border);
-      padding-top: 5px;
-      margin-top: 2px;
-      font-size: 12px;
-      color: var(--text-normal);
-      line-height: 1.5;
     }
-    .auto-linker-preview > * { margin: 0 0 4px 0 !important; }
-    .auto-linker-preview h1,
-    .auto-linker-preview h2,
-    .auto-linker-preview h3 { font-size: 13px; }
-    .auto-linker-preview ul { padding-left: 18px; }
-    /* This is a read-only preview — strip MarkdownRenderer's copy / edit
-       buttons (e.g. the code-block copy button on indented lines). */
-    .auto-linker-preview button,
-    .auto-linker-preview .copy-code-button,
-    .auto-linker-preview .edit-block-button { display: none !important; }
+    .auto-linker-peek-content > * { margin: 0 0 4px 0 !important; }
+    .auto-linker-peek-content h1,
+    .auto-linker-peek-content h2,
+    .auto-linker-peek-content h3 { font-size: 13px; }
+    .auto-linker-peek-content ul { padding-left: 18px; }
+    /* read-only — strip MarkdownRenderer's copy / edit buttons */
+    .auto-linker-peek-content button,
+    .auto-linker-peek-content .copy-code-button,
+    .auto-linker-peek-content .edit-block-button { display: none !important; }
+
+    /* Kink — points up at the eye by default (peek below), flips down when
+       the peek is rendered above the eye. Its left is set inline. */
+    .auto-linker-peek-kink {
+      position: absolute;
+      width: 0; height: 0;
+      border-left: 7px solid transparent;
+      border-right: 7px solid transparent;
+      top: -7px;
+      border-bottom: 7px solid var(--background-secondary);
+    }
+    .auto-linker-peek--above .auto-linker-peek-kink {
+      top: auto;
+      bottom: -7px;
+      border-bottom: none;
+      border-top: 7px solid var(--background-secondary);
+    }
   `;
   doc.head.appendChild(style);
 }
