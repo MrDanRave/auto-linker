@@ -14,6 +14,7 @@ import {
   RangeSetBuilder,
   EditorState,
 } from "@codemirror/state";
+import { setIcon } from "obsidian";
 
 // ---------------------------------------------------------------------------
 // Effects — dispatched to add/remove/clear decoration ranges
@@ -42,7 +43,8 @@ export type WidgetAction = "approve" | "reject";
 export interface WidgetCallbacks {
   onApprove: (meta: DecorationMeta) => void;
   onReject:  (meta: DecorationMeta) => void;
-  onPreview: (targetPath: string) => Promise<string>;
+  /** Render a markdown preview of the target note into the given element. */
+  onPreview: (targetPath: string, el: HTMLElement) => Promise<void>;
   onOpen:    (targetPath: string) => void;
 }
 
@@ -169,6 +171,9 @@ function makeTooltipForId(
         const approve = row.createEl("button", { cls: "auto-linker-btn auto-linker-btn-approve", text: "✓" });
         const reject  = row.createEl("button", { cls: "auto-linker-btn auto-linker-btn-reject",  text: "✗" });
 
+        // Outline (Lucide) eye icon — not an emoji
+        setIcon(eye, "eye");
+
         const preview = dom.createEl("div", { cls: "auto-linker-preview" });
 
         const noFocus = (e: MouseEvent) => e.preventDefault();
@@ -176,19 +181,19 @@ function makeTooltipForId(
         approve.addEventListener("mousedown", noFocus);
         reject.addEventListener("mousedown",  noFocus);
 
-        // Eye hover: expand preview pane and load content once
+        // Eye hover: expand preview pane and render the note markdown once
         let previewLoaded = false;
         eye.addEventListener("mouseenter", async () => {
           preview.style.display = "block";
           if (!previewLoaded) {
+            previewLoaded = true;
             preview.setText("Loading…");
             try {
-              const text = await callbacks.onPreview(targetPath);
-              preview.setText(text.trim() || "(empty note)");
+              preview.empty();
+              await callbacks.onPreview(targetPath, preview);
             } catch {
               preview.setText("(could not load preview)");
             }
-            previewLoaded = true;
           }
         });
         // Eye click: open the note
@@ -319,23 +324,31 @@ export function injectCM6Styles(doc: Document) {
       cursor: pointer;
     }
 
-    /* Tooltip container — theme-aware via Obsidian CSS variables */
+    /* Reset CodeMirror's tooltip chrome — the visible box is the inner div,
+       which is styled purely from Obsidian theme variables so it can never
+       render with the wrong (reversed) theme or invisible text. */
     .cm-tooltip:has(.auto-linker-tooltip) {
-      background: var(--background-secondary) !important;
-      border: 1px solid var(--background-modifier-border) !important;
-      border-radius: 6px;
-      color: var(--text-normal);
+      background: transparent !important;
+      border: none !important;
+      box-shadow: none !important;
     }
-    .theme-dark  .cm-tooltip:has(.auto-linker-tooltip) { box-shadow: 0 2px 12px rgba(0,0,0,0.45); }
-    .theme-light .cm-tooltip:has(.auto-linker-tooltip) { box-shadow: 0 2px 8px  rgba(0,0,0,0.12); }
+    .cm-tooltip:has(.auto-linker-tooltip) .cm-tooltip-arrow {
+      display: none !important;
+    }
 
     .auto-linker-tooltip {
       display: flex;
       flex-direction: column;
       gap: 4px;
       padding: 6px 8px;
-      background: transparent;
+      background: var(--background-secondary);
+      color: var(--text-normal);
+      border: 1px solid var(--background-modifier-border);
+      border-radius: 6px;
     }
+    .theme-dark  .auto-linker-tooltip { box-shadow: 0 2px 12px rgba(0,0,0,0.45); }
+    .theme-light .auto-linker-tooltip { box-shadow: 0 2px 8px  rgba(0,0,0,0.12); }
+
     .auto-linker-tooltip-row {
       display: flex;
       align-items: center;
@@ -352,7 +365,6 @@ export function injectCM6Styles(doc: Document) {
       flex: 1;
     }
 
-    /* Shared button base */
     .auto-linker-btn {
       font-size: 12px;
       padding: 1px 7px;
@@ -366,25 +378,34 @@ export function injectCM6Styles(doc: Document) {
     .auto-linker-btn-approve:hover { background: var(--color-green); color: #fff; }
     .auto-linker-btn-reject:hover  { background: var(--color-red);   color: #fff; }
 
-    /* Eye button */
-    .auto-linker-btn-eye::before { content: "👁"; }
-    .auto-linker-btn-eye { font-size: 13px; padding: 0 5px; line-height: 1.6; }
+    /* Eye: outline SVG icon from setIcon() */
+    .auto-linker-btn-eye {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 2px 5px;
+    }
+    .auto-linker-btn-eye svg { width: 14px; height: 14px; }
     .auto-linker-btn-eye:hover { background: var(--interactive-accent); color: #fff; }
 
-    /* Preview pane — appears below the button row on eye hover */
+    /* Preview pane — rendered markdown, appears below the row on eye hover */
     .auto-linker-preview {
       display: none;
-      font-size: 11px;
-      color: var(--text-muted);
-      white-space: pre-wrap;
-      max-width: 280px;
-      max-height: 120px;
+      max-width: 300px;
+      max-height: 160px;
       overflow-y: auto;
       border-top: 1px solid var(--background-modifier-border);
       padding-top: 5px;
       margin-top: 2px;
+      font-size: 12px;
+      color: var(--text-normal);
       line-height: 1.5;
     }
+    .auto-linker-preview p { margin: 0 0 4px 0; }
+    .auto-linker-preview h1,
+    .auto-linker-preview h2,
+    .auto-linker-preview h3 { margin: 2px 0; font-size: 13px; }
+    .auto-linker-preview ul { margin: 0; padding-left: 18px; }
   `;
   doc.head.appendChild(style);
 }

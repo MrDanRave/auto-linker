@@ -46,14 +46,14 @@ export class AutoLinkerSettingTab extends PluginSettingTab {
     if (rejectList.length === 0) {
       containerEl.createEl("p", {
         cls:  "auto-linker-settings-empty",
-        text: "No permanently rejected suggestions.",
+        text: "No rejected suggestions.",
       });
       return;
     }
 
     containerEl.createEl("p", {
       cls:  "auto-linker-settings-desc",
-      text: `${rejectList.length} suggestion${rejectList.length === 1 ? "" : "s"} permanently rejected. Removing an entry makes it suggestable again.`,
+      text: `${rejectList.length} rejected suggestion${rejectList.length === 1 ? "" : "s"}. "All notes" = vault-wide; otherwise rejected only in the named note. Removing an entry makes it suggestable again.`,
     });
 
     const table = containerEl.createEl("div", { cls: "auto-linker-reject-table" });
@@ -66,6 +66,11 @@ export class AutoLinkerSettingTab extends PluginSettingTab {
         text: `"${entry.span}" → ${entry.targetName}`,
       });
 
+      row.createEl("span", {
+        cls:  "auto-linker-reject-table-scope",
+        text: entry.noteName ? `in ${entry.noteName}` : "all notes",
+      });
+
       const removeBtn = row.createEl("button", {
         cls:  "auto-linker-reject-table-remove",
         text: "Remove",
@@ -73,7 +78,7 @@ export class AutoLinkerSettingTab extends PluginSettingTab {
       });
 
       removeBtn.addEventListener("click", async () => {
-        linker.removeFromRejectList(entry.span, entry.targetPath);
+        linker.removeFromRejectList(entry.span, entry.targetPath, entry.notePath);
         await this.plugin.persistAutoLinker();
         this.display(); // re-render
       });

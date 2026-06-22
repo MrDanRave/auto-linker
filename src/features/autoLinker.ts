@@ -1,4 +1,4 @@
-import { App, TFile } from "obsidian";
+import { App, TFile, Component, MarkdownRenderer } from "obsidian";
 import { EditorView } from "@codemirror/view";
 import {
   addDecoEffect,
@@ -27,9 +27,15 @@ export interface Suggestion {
   targetName: string;
 }
 
+/**
+ * A rejection lives in exactly one of two buckets, and both persist:
+ *   - notePath === null → VAULT-bound: suppress (span→target) in every note.
+ *   - notePath === "x"  → NOTE-bound:  suppress (span→target) only in that note.
+ */
 interface RejectEntry {
   span: string;
   targetPath: string;
+  notePath: string | null;
 }
 
 interface PersistedState {
@@ -40,6 +46,14 @@ interface StagedReject {
   span: string;
   targetPath: string;
   targetName: string;
+  notePath: string;   // origin note (where the X was clicked)
+  noteName: string;
+}
+
+const VAULT = "*"; // key token for vault-bound entries
+
+function rejectKey(span: string, targetPath: string, notePath: string | null): string {
+  return `${span}|||${targetPath}|||${notePath ?? VAULT}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -100,16 +114,13 @@ export function scanRegion(
   regionFrom: number,
   activeFilePath: string,
   index: TitleIndex,
-  rejectList: RejectEntry[],
-  sessionRejects: Set<string>
+  rejectList: RejectEntry[]
 ): Suggestion[] {
   const suggestions: Suggestion[] = [];
 
-  // Permanent and session rejects share one lookup set
-  const rejectSet = new Set([
-    ...rejectList.map((r) => `${r.span}|||${r.targetPath}`),
-    ...sessionRejects,
-  ]);
+  // All reject keys; a candidate is blocked if a vault-bound OR a matching
+  // note-bound entry exists for it.
+  const rejectSet = new Set(rejectList.map((r) => rejectKey(r.span, r.targetPath, r.notePath)));
 
   const skipRanges: Array<[number, number]> = [];
   let m: RegExpExecArray | null;
@@ -147,9 +158,10 @@ export function scanRegion(
         const boundaryAfter  = !charAfter  || /\W/.test(charAfter);
 
         if (boundaryBefore && boundaryAfter && !isSkipped(from, to)) {
-          const span      = text.slice(pos, pos + prefixLen);
-          const rejectKey = `${span}|||${targetPath}`;
-          if (!rejectSet.has(rejectKey)) {
+          const span = text.slice(pos, pos + prefixLen);
+          const blockedVault = rejectSet.has(rejectKey(span, targetPath, null));
+          const blockedNote  = rejectSet.has(rejectKey(span, targetPath, activeFilePath));
+          if (!blockedVault && !blockedNote) {
             suggestions.push({
               id: `${targetPath}::${from}::${to}`,
               from, to, span, targetPath,
@@ -173,10 +185,6 @@ export function scanRegion(
 export class AutoLinker {
   readonly titleIndex: TitleIndex;
   private rejectList: RejectEntry[] = [];
-
-  // Rejects active for this session only — not persisted, cleared on plugin reload
-  private sessionRejects = new Set<string>();
-
   private readonly DATA_KEY = "autoLinker";
 
   constructor(private app: App) {
@@ -186,7 +194,12 @@ export class AutoLinker {
   async load(loadData: () => Promise<Record<string, unknown> | null>) {
     const data  = (await loadData()) as Record<string, PersistedState> | null;
     const saved = data?.[this.DATA_KEY] as PersistedState | undefined;
-    this.rejectList = saved?.rejectList ?? [];
+    // Migrate any legacy entries (no notePath field) → treat as vault-bound.
+    this.rejectList = (saved?.rejectList ?? []).map((r) => ({
+      span: r.span,
+      targetPath: r.targetPath,
+      notePath: r.notePath ?? null,
+    }));
   }
 
   buildWhenReady() {
@@ -205,7 +218,11 @@ export class AutoLinker {
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   registerMetadataEvents(registerEvent: (e: any) => void) {
-    registerEvent(this.app.metadataCache.on("changed", (file) => this.titleIndex.addFile(file)));
+    registerEvent(this.app.metadataCache.on("changed", (file) => {
+      // remove-then-add so renamed/removed aliases don't linger
+      this.titleIndex.removeFile(file);
+      this.titleIndex.addFile(file);
+    }));
     registerEvent(this.app.metadataCache.on("deleted", (file) => this.titleIndex.removeFile(file)));
     registerEvent(this.app.vault.on("rename" as "create", (file, oldPath) => {
       if (file instanceof TFile) this.titleIndex.renameFile(file, oldPath as string);
@@ -213,68 +230,100 @@ export class AutoLinker {
   }
 
   scan(text: string, regionFrom: number, activeFilePath: string): Suggestion[] {
-    return scanRegion(text, regionFrom, activeFilePath, this.titleIndex, this.rejectList, this.sessionRejects);
+    return scanRegion(text, regionFrom, activeFilePath, this.titleIndex, this.rejectList);
   }
 
-  // ── Reject lifecycle ────────────────────────────────────────────────────
+  // ── Reject lifecycle ──────────────────────────────────────────────────────
 
-  /** X button: suppress for this session only, not yet permanent. */
-  sessionReject(span: string, targetPath: string) {
-    this.sessionRejects.add(`${span}|||${targetPath}`);
+  private has(span: string, targetPath: string, notePath: string | null): boolean {
+    return this.rejectList.some(
+      (r) => r.span === span && r.targetPath === targetPath && r.notePath === notePath
+    );
   }
 
-  /** Panel "Yes": promote a session reject to the permanent list. */
-  confirmReject(span: string, targetPath: string) {
-    const key = `${span}|||${targetPath}`;
-    if (!this.rejectList.some((r) => `${r.span}|||${r.targetPath}` === key)) {
-      this.rejectList.push({ span, targetPath });
+  /** ✗ button: reject (span→target) for this note only. Persisted. */
+  noteReject(span: string, targetPath: string, notePath: string) {
+    if (!this.has(span, targetPath, notePath)) {
+      this.rejectList.push({ span, targetPath, notePath });
     }
   }
 
-  /** Panel "↩": undo the session reject so the suggestion can reappear. */
-  restoreReject(span: string, targetPath: string) {
-    this.sessionRejects.delete(`${span}|||${targetPath}`);
+  /** Panel "Yes": promote to vault-bound — drop any note-bound copies first. */
+  vaultReject(span: string, targetPath: string) {
+    this.rejectList = this.rejectList.filter(
+      (r) => !(r.span === span && r.targetPath === targetPath)
+    );
+    this.rejectList.push({ span, targetPath, notePath: null });
   }
 
-  // ── Settings UI accessors ───────────────────────────────────────────────
+  /** Panel "↩" Restore: remove the note-bound rejection so it can reappear. */
+  restoreNoteReject(span: string, targetPath: string, notePath: string) {
+    this.rejectList = this.rejectList.filter(
+      (r) => !(r.span === span && r.targetPath === targetPath && r.notePath === notePath)
+    );
+  }
 
-  getRejectList(): Array<{ span: string; targetPath: string; targetName: string }> {
+  /**
+   * A note (or link target) was deleted — drop every rejection that references
+   * its path, in either field, so a future note of the same name is suggestable.
+   * Returns true if anything was removed.
+   */
+  pruneRejectsForPath(path: string): boolean {
+    const before = this.rejectList.length;
+    this.rejectList = this.rejectList.filter(
+      (r) => r.targetPath !== path && r.notePath !== path
+    );
+    return this.rejectList.length !== before;
+  }
+
+  // ── Settings UI accessors ─────────────────────────────────────────────────
+
+  getRejectList(): Array<{
+    span: string;
+    targetPath: string;
+    targetName: string;
+    notePath: string | null;
+    noteName: string | null;
+  }> {
     return this.rejectList.map((r) => ({
-      ...r,
+      span: r.span,
+      targetPath: r.targetPath,
       targetName: r.targetPath.split("/").pop()?.replace(/\.md$/, "") ?? r.targetPath,
+      notePath: r.notePath,
+      noteName: r.notePath
+        ? (r.notePath.split("/").pop()?.replace(/\.md$/, "") ?? r.notePath)
+        : null,
     }));
   }
 
-  removeFromRejectList(span: string, targetPath: string) {
+  removeFromRejectList(span: string, targetPath: string, notePath: string | null) {
     this.rejectList = this.rejectList.filter(
-      (r) => !(r.span === span && r.targetPath === targetPath)
+      (r) => !(r.span === span && r.targetPath === targetPath && r.notePath === notePath)
     );
   }
 }
 
 // ---------------------------------------------------------------------------
-// Reject staging panel
+// Reject staging panel — accumulates X-clicks, grouped by origin note
 // ---------------------------------------------------------------------------
 
 export class RejectStagingPanel {
   private el: HTMLElement | null = null;
   private items: StagedReject[]  = [];
+  private minimized = false;
 
   constructor(
     private app: App,
     private linker: AutoLinker,
-    private persistFn: () => void
+    private persistFn: () => void,
+    private rescanActive: () => void
   ) {}
 
   add(item: StagedReject) {
-    if (this.items.some((i) => i.span === item.span && i.targetPath === item.targetPath)) return;
+    if (this.items.some((i) => i.span === item.span && i.targetPath === item.targetPath && i.notePath === item.notePath)) return;
     this.items.push(item);
     this.mount();
     this.render();
-  }
-
-  private getView(): EditorView | undefined {
-    return this.app.workspace.activeEditor?.editor?.cm as EditorView | undefined;
   }
 
   private mount() {
@@ -287,82 +336,94 @@ export class RejectStagingPanel {
     if (!this.el) return;
     this.el.empty();
 
-    this.el.createEl("p", {
-      cls:  "auto-linker-reject-panel-header",
-      text: "Permanently reject these suggestions?",
+    // Header bar with title + minimize toggle
+    const header = this.el.createEl("div", { cls: "auto-linker-reject-panel-headerbar" });
+    header.createEl("span", {
+      cls:  "auto-linker-reject-panel-title",
+      text: `Permanently reject these suggestions? (${this.items.length})`,
     });
+    const minBtn = header.createEl("button", {
+      cls:  "auto-linker-reject-min",
+      text: this.minimized ? "▢" : "—",
+      attr: { "aria-label": this.minimized ? "Expand" : "Minimize" },
+    });
+    minBtn.addEventListener("click", () => { this.minimized = !this.minimized; this.render(); });
 
-    const list = this.el.createEl("div", { cls: "auto-linker-reject-panel-list" });
+    if (this.minimized) return;
 
-    for (const item of [...this.items]) {
-      const row = list.createEl("div", { cls: "auto-linker-reject-panel-row" });
-      row.createEl("span", {
-        cls:  "auto-linker-reject-panel-label",
-        text: `"${item.span}" → ${item.targetName}`,
+    // Group rows by origin note
+    const body = this.el.createEl("div", { cls: "auto-linker-reject-panel-body" });
+    const groups = new Map<string, StagedReject[]>();
+    for (const item of this.items) {
+      const arr = groups.get(item.notePath) ?? [];
+      arr.push(item);
+      groups.set(item.notePath, arr);
+    }
+
+    for (const [, groupItems] of groups) {
+      body.createEl("div", {
+        cls:  "auto-linker-reject-group-label",
+        text: `[${groupItems[0].noteName}]`,
       });
 
-      const yes = row.createEl("button", {
-        cls: "auto-linker-reject-btn auto-linker-reject-yes", text: "Yes",
-      });
-      const no = row.createEl("button", {
-        cls: "auto-linker-reject-btn auto-linker-reject-no", text: "No",
-      });
-      const restore = row.createEl("button", {
-        cls:  "auto-linker-reject-btn auto-linker-reject-restore",
-        text: "↩",
-        attr: { "aria-label": "Restore suggestion" },
-      });
+      for (const item of groupItems) {
+        const row = body.createEl("div", { cls: "auto-linker-reject-panel-row" });
+        row.createEl("span", {
+          cls:  "auto-linker-reject-panel-label",
+          text: `"${item.span}" → ${item.targetName}`,
+        });
 
-      yes.addEventListener("click",     () => this.confirmItem(item));
-      no.addEventListener("click",      () => this.sessionItem(item));
-      restore.addEventListener("click", () => this.restoreItem(item));
+        const yes     = row.createEl("button", { cls: "auto-linker-reject-btn auto-linker-reject-yes",     text: "Yes" });
+        const no      = row.createEl("button", { cls: "auto-linker-reject-btn auto-linker-reject-no",      text: "No"  });
+        const restore = row.createEl("button", { cls: "auto-linker-reject-btn auto-linker-reject-restore", text: "↩", attr: { "aria-label": "Restore suggestion" } });
+
+        yes.addEventListener("click",     () => this.confirmItem(item));
+        no.addEventListener("click",      () => this.dismissItem(item));
+        restore.addEventListener("click", () => this.restoreItem(item));
+      }
     }
 
     const footer = this.el.createEl("div", { cls: "auto-linker-reject-panel-footer" });
-    footer.createEl("button", {
-      cls: "auto-linker-reject-btn auto-linker-reject-no-all", text: "No to All",
-    }).addEventListener("click", () => this.sessionAll());
-    footer.createEl("button", {
-      cls: "auto-linker-reject-btn auto-linker-reject-yes-all", text: "Yes to All",
-    }).addEventListener("click", () => this.confirmAll());
+    footer.createEl("button", { cls: "auto-linker-reject-btn auto-linker-reject-no-all",  text: "No to All"  })
+      .addEventListener("click", () => this.dismissAll());
+    footer.createEl("button", { cls: "auto-linker-reject-btn auto-linker-reject-yes-all", text: "Yes to All" })
+      .addEventListener("click", () => this.confirmAll());
   }
 
-  private removeItem(item: StagedReject) {
+  private drop(item: StagedReject) {
     this.items = this.items.filter((i) => i !== item);
     if (this.items.length === 0) this.hide();
     else this.render();
   }
 
+  /** Yes → escalate this note-bound reject to vault-bound. */
   private confirmItem(item: StagedReject) {
-    this.linker.confirmReject(item.span, item.targetPath);
+    this.linker.vaultReject(item.span, item.targetPath);
     this.persistFn();
-    this.removeItem(item);
+    this.drop(item);
   }
 
-  private sessionItem(item: StagedReject) {
-    // Already session-rejected; just dismiss from the panel
-    this.removeItem(item);
+  /** No → keep it note-bound (already persisted on X); just dismiss the chip. */
+  private dismissItem(item: StagedReject) {
+    this.drop(item);
   }
 
+  /** ↩ → undo the note-bound reject and bring the underline back. */
   private restoreItem(item: StagedReject) {
-    this.linker.restoreReject(item.span, item.targetPath);
-    const view = this.getView();
-    if (view) {
-      const activeFile = this.app.workspace.getActiveFile();
-      if (activeFile) scanFullNote(view, activeFile, this.linker);
-    }
-    this.removeItem(item);
+    this.linker.restoreNoteReject(item.span, item.targetPath, item.notePath);
+    this.persistFn();
+    this.rescanActive();
+    this.drop(item);
   }
 
   private confirmAll() {
-    for (const item of this.items) this.linker.confirmReject(item.span, item.targetPath);
+    for (const item of this.items) this.linker.vaultReject(item.span, item.targetPath);
     this.persistFn();
     this.items = [];
     this.hide();
   }
 
-  private sessionAll() {
-    // All already session-rejected; close without persisting
+  private dismissAll() {
     this.items = [];
     this.hide();
   }
@@ -372,10 +433,38 @@ export class RejectStagingPanel {
     this.el.removeClass("auto-linker-reject-panel--visible");
     const el = this.el;
     this.el  = null;
+    this.minimized = false;
     setTimeout(() => el.remove(), 300);
   }
 
-  destroy() { this.el?.remove(); this.el = null; }
+  destroy() { this.el?.remove(); this.el = null; this.items = []; }
+}
+
+// ---------------------------------------------------------------------------
+// Markdown preview helper (version-tolerant)
+// ---------------------------------------------------------------------------
+
+async function renderPreview(
+  app: App,
+  targetPath: string,
+  el: HTMLElement,
+  component: Component
+): Promise<void> {
+  const file = app.vault.getAbstractFileByPath(targetPath);
+  if (!(file instanceof TFile)) { el.setText("(note not found)"); return; }
+
+  const content = await app.vault.cachedRead(file);
+  const excerpt = content.split("\n").slice(0, 12).join("\n").trim() || "(empty note)";
+
+  el.empty();
+  // MarkdownRenderer.render is the modern API; fall back to renderMarkdown.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const MR = MarkdownRenderer as any;
+  if (typeof MR.render === "function") {
+    await MR.render(app, excerpt, el, targetPath, component);
+  } else {
+    await MR.renderMarkdown(excerpt, el, targetPath, component);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -386,7 +475,8 @@ export function buildAutoLinkerExtensions(
   app: App,
   linker: AutoLinker,
   stagingPanel: RejectStagingPanel,
-  persistFn: () => void
+  persistFn: () => void,
+  component: Component
 ) {
   const callbacks: WidgetCallbacks = {
     onApprove: (meta: DecorationMeta) => {
@@ -398,27 +488,33 @@ export function buildAutoLinkerExtensions(
         changes: { from: meta.from, to: meta.to, insert: replacement },
         effects: [removeDecoEffect.of({ id: meta.id })],
       });
-      persistFn();
     },
 
     onReject: (meta: DecorationMeta) => {
       const view = app.workspace.activeEditor?.editor?.cm as EditorView | undefined;
       if (!view) return;
       const data = meta.data as { span: string; targetPath: string; targetName: string };
-      // Remove all underlines for this span/target pair across the entire note
+      const activeFile = app.workspace.getActiveFile();
+      const notePath = activeFile?.path ?? "";
+
+      // Note-bound reject, persisted immediately (survives reload, scoped to this note)
+      linker.noteReject(data.span, data.targetPath, notePath);
+      persistFn();
+
+      // Remove all underlines for this span/target in the current note
       view.dispatch({ effects: [removeBySpanTargetEffect.of({ span: data.span, targetPath: data.targetPath })] });
-      // Session-reject immediately so re-scans don't re-add it
-      linker.sessionReject(data.span, data.targetPath);
-      // Hand to the staging panel — the user decides permanent vs session
-      stagingPanel.add({ span: data.span, targetPath: data.targetPath, targetName: data.targetName });
+
+      // Stage for the escalate/restore decision
+      stagingPanel.add({
+        span: data.span,
+        targetPath: data.targetPath,
+        targetName: data.targetName,
+        notePath,
+        noteName: activeFile?.basename ?? "Unknown",
+      });
     },
 
-    onPreview: async (targetPath: string): Promise<string> => {
-      const file = app.vault.getAbstractFileByPath(targetPath);
-      if (!(file instanceof TFile)) return "";
-      const content = await app.vault.cachedRead(file);
-      return content.split("\n").slice(0, 8).join("\n");
-    },
+    onPreview: (targetPath: string, el: HTMLElement) => renderPreview(app, targetPath, el, component),
 
     onOpen: (targetPath: string) => {
       const file = app.vault.getAbstractFileByPath(targetPath);
@@ -484,7 +580,7 @@ export function injectAutoLinkerStyles(doc: Document) {
       background: var(--background-primary);
       border: 1px solid var(--background-modifier-border);
       border-radius: 8px;
-      padding: 12px 14px;
+      padding: 10px 12px;
       z-index: 1000;
       opacity: 0;
       transform: translateX(20px);
@@ -499,22 +595,47 @@ export function injectAutoLinkerStyles(doc: Document) {
     .theme-dark  .auto-linker-reject-panel { box-shadow: 0 4px 16px rgba(0,0,0,0.5); }
     .theme-light .auto-linker-reject-panel { box-shadow: 0 4px 12px rgba(0,0,0,0.12); }
 
-    .auto-linker-reject-panel-header {
+    .auto-linker-reject-panel-headerbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .auto-linker-reject-panel-title {
+      flex: 1;
       font-size: 11px;
       font-weight: 600;
       color: var(--text-muted);
       text-transform: uppercase;
       letter-spacing: 0.05em;
-      margin: 0 0 8px 0;
     }
-    .auto-linker-reject-panel-list {
+    .auto-linker-reject-min {
+      font-size: 12px;
+      line-height: 1;
+      padding: 2px 7px;
+      border-radius: 3px;
+      border: 1px solid var(--background-modifier-border);
+      background: var(--background-secondary);
+      color: var(--text-normal);
+      cursor: pointer;
+    }
+    .auto-linker-reject-min:hover { background: var(--background-modifier-hover); }
+
+    .auto-linker-reject-panel-body {
       display: flex;
       flex-direction: column;
-      gap: 4px;
-      max-height: 220px;
+      gap: 3px;
+      max-height: 240px;
       overflow-y: auto;
       margin-bottom: 10px;
     }
+    .auto-linker-reject-group-label {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-accent);
+      margin: 6px 0 2px 0;
+    }
+    .auto-linker-reject-group-label:first-child { margin-top: 0; }
     .auto-linker-reject-panel-row {
       display: flex;
       align-items: center;
@@ -536,7 +657,6 @@ export function injectAutoLinkerStyles(doc: Document) {
       padding-top: 8px;
     }
 
-    /* Shared button base */
     .auto-linker-reject-btn {
       font-size: 12px;
       padding: 2px 8px;
@@ -588,6 +708,12 @@ export function injectAutoLinkerStyles(doc: Document) {
       color: var(--text-normal);
       overflow: hidden;
       text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .auto-linker-reject-table-scope {
+      font-size: 11px;
+      color: var(--text-muted);
+      font-style: italic;
       white-space: nowrap;
     }
     .auto-linker-reject-table-remove {

@@ -1,4 +1,4 @@
-import { Plugin } from "obsidian";
+import { Plugin, TFile } from "obsidian";
 import { DEFAULT_SETTINGS, AutoLinkerSettings, AutoLinkerSettingTab } from "./settings";
 import {
   AutoLinker,
@@ -30,26 +30,44 @@ export default class AutoLinkerPlugin extends Plugin {
       linker.buildWhenReady();
       linker.registerMetadataEvents((e) => this.registerEvent(e));
 
-      const persistFn = () =>
-        linker.save(() => this.loadData(), (d) => this.saveData(d));
+      const persistFn    = () => linker.save(() => this.loadData(), (d) => this.saveData(d));
+      const rescanActive = () => this.rescanActiveEditor();
 
-      const panel = new RejectStagingPanel(this.app, linker, persistFn);
+      const panel = new RejectStagingPanel(this.app, linker, persistFn, rescanActive);
       this.stagingPanel = panel;
 
-      const extensions = buildAutoLinkerExtensions(this.app, linker, panel, persistFn);
+      const extensions = buildAutoLinkerExtensions(this.app, linker, panel, persistFn, this);
       this.registerEditorExtension(extensions);
 
+      // Full-note scan when a file is opened
       this.registerEvent(
         this.app.workspace.on("file-open", (file) => {
           if (!file) return;
-          setTimeout(() => {
-            const cm = this.app.workspace.activeEditor?.editor?.cm as EditorView | undefined;
-            if (!cm) return;
-            scanFullNote(cm, file, linker);
-          }, 200);
+          setTimeout(() => this.rescanActiveEditor(), 200);
+        })
+      );
+
+      // When a file is deleted, drop its rejections so a same-named note
+      // created later is suggestable again.
+      this.registerEvent(
+        this.app.vault.on("delete", async (file) => {
+          if (!(file instanceof TFile)) return;
+          if (linker.pruneRejectsForPath(file.path)) {
+            await persistFn();
+            this.rescanActiveEditor();
+          }
         })
       );
     }
+  }
+
+  private rescanActiveEditor() {
+    if (!this.autoLinker) return;
+    const file = this.app.workspace.getActiveFile();
+    if (!file) return;
+    const cm = this.app.workspace.activeEditor?.editor?.cm as EditorView | undefined;
+    if (!cm) return;
+    scanFullNote(cm, file, this.autoLinker);
   }
 
   onunload() {
