@@ -375,7 +375,7 @@ export class RejectStagingPanel {
 
         const yes     = row.createEl("button", { cls: "auto-linker-reject-btn auto-linker-reject-yes",     text: "Yes" });
         const no      = row.createEl("button", { cls: "auto-linker-reject-btn auto-linker-reject-no",      text: "No"  });
-        const restore = row.createEl("button", { cls: "auto-linker-reject-btn auto-linker-reject-restore", text: "↩", attr: { "aria-label": "Restore suggestion" } });
+        const restore = row.createEl("button", { cls: "auto-linker-reject-btn auto-linker-reject-restore", text: "↺", attr: { "aria-label": "Restore suggestion" } });
 
         yes.addEventListener("click",     () => this.confirmItem(item));
         no.addEventListener("click",      () => this.dismissItem(item));
@@ -612,13 +612,17 @@ export function injectAutoLinkerStyles(doc: Document) {
       font-weight: 900;
       line-height: 1;
       padding: 0 6px;
-      border: none;
-      background: none;
-      box-shadow: none;
+      border: none !important;
+      background: transparent !important;
+      box-shadow: none !important;
       color: var(--text-normal);
       cursor: pointer;
     }
-    .auto-linker-reject-min:hover { color: var(--text-accent); background: none; }
+    .auto-linker-reject-min:hover {
+      color: var(--text-accent);
+      background: transparent !important;
+      box-shadow: none !important;
+    }
 
     .auto-linker-reject-panel-body {
       display: flex;
@@ -668,10 +672,10 @@ export function injectAutoLinkerStyles(doc: Document) {
       transition: background 0.1s, color 0.1s;
     }
     .auto-linker-reject-yes:hover,
-    .auto-linker-reject-yes-all:hover { background: var(--color-green); color: #fff; }
-    .auto-linker-reject-restore:hover { background: var(--color-red);   color: #fff; }
+    .auto-linker-reject-yes-all:hover { background: var(--color-red);   color: #fff; }
     .auto-linker-reject-no:hover,
-    .auto-linker-reject-no-all:hover  { background: var(--color-purple, var(--interactive-accent)); color: #fff; }
+    .auto-linker-reject-no-all:hover  { background: var(--color-green); color: #fff; }
+    .auto-linker-reject-restore:hover { background: var(--interactive-accent); color: var(--text-on-accent, #fff); }
 
     /* ── Settings page reject table ───────────────────────────────── */
     .auto-linker-settings-desc {
@@ -685,74 +689,27 @@ export function injectAutoLinkerStyles(doc: Document) {
       font-style: italic;
       margin: 4px 0 4px 12px;
     }
-    .auto-linker-reject-details {
-      margin-bottom: 10px;
-      border: 1px solid var(--background-modifier-border);
-      border-radius: 6px;
-      padding: 6px 10px;
-    }
+    /* Collapsible reject groups — styled to sit naturally in the settings tab */
+    .auto-linker-reject-details { margin: 2px 0; }
     .auto-linker-reject-details > summary {
       cursor: pointer;
-      font-weight: 600;
-      font-size: 13px;
+      padding: 10px 0;
+      font-weight: var(--font-semibold, 600);
       color: var(--text-normal);
+      border-top: 1px solid var(--background-modifier-border);
+      list-style-position: inside;
     }
-    .auto-linker-reject-subdetails {
-      margin: 6px 0 6px 8px;
-      border-left: 2px solid var(--background-modifier-border);
-      padding-left: 8px;
-    }
+    .auto-linker-reject-subdetails { margin-left: 14px; }
     .auto-linker-reject-subdetails > summary {
       cursor: pointer;
-      font-size: 12px;
-      font-style: italic;
+      padding: 8px 0;
       color: var(--text-muted);
+      list-style-position: inside;
     }
-    .auto-linker-reject-table {
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-      margin-bottom: 24px;
-      max-height: 320px;
-      overflow-y: auto;
-    }
-    .auto-linker-reject-table-row {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      padding: 4px 8px;
-      border-radius: 4px;
-      background: var(--background-secondary);
-    }
-    .auto-linker-reject-table-row:hover { background: var(--background-modifier-hover); }
-    .auto-linker-reject-table-label {
-      flex: 1;
-      font-size: 13px;
-      color: var(--text-normal);
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-    .auto-linker-reject-table-scope {
-      font-size: 11px;
-      color: var(--text-muted);
-      font-style: italic;
-      white-space: nowrap;
-    }
-    .auto-linker-reject-table-remove {
-      font-size: 12px;
-      padding: 2px 8px;
-      border-radius: 3px;
-      border: 1px solid var(--background-modifier-border);
-      background: transparent;
-      color: var(--text-muted);
-      cursor: pointer;
-    }
-    .auto-linker-reject-table-remove:hover {
-      background: var(--color-red);
-      color: #fff;
-      border-color: transparent;
-    }
+    /* Settings reject rows reuse Obsidian's native .setting-item look; just
+       give the empty-state and indentation a little room. */
+    .auto-linker-reject-details .setting-item { border-top: none; padding: 8px 0; }
+    .auto-linker-reject-subdetails .setting-item { padding-left: 4px; }
   `;
   doc.head.appendChild(style);
 }

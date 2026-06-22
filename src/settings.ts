@@ -19,6 +19,8 @@ interface RejectRow {
 
 export class AutoLinkerSettingTab extends PluginSettingTab {
   plugin: AutoLinkerPlugin;
+  /** Which collapsible groups are open — preserved across re-renders. */
+  private openKeys = new Set<string>();
 
   constructor(app: App, plugin: AutoLinkerPlugin) {
     super(app, plugin);
@@ -28,7 +30,6 @@ export class AutoLinkerSettingTab extends PluginSettingTab {
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl("h2", { text: "Auto Linker Settings" });
 
     // ── Feature toggle ────────────────────────────────────────────────────
     new Setting(containerEl)
@@ -47,24 +48,18 @@ export class AutoLinkerSettingTab extends PluginSettingTab {
     const linker = this.plugin.autoLinker;
     if (!linker) return;
 
-    containerEl.createEl("h3", { text: "Rejected Suggestions" });
-    containerEl.createEl("p", {
-      cls:  "auto-linker-settings-desc",
-      text: "Remove an entry to make it suggestable again.",
-    });
+    new Setting(containerEl).setName("Rejected suggestions").setHeading();
 
     const all = linker.getRejectList();
     const vaultRejects = all.filter((r) => r.notePath === null);
     const noteRejects  = all.filter((r) => r.notePath !== null);
 
     // Vault Rejections — flat list under one dropdown
-    const vaultDetails = containerEl.createEl("details", { cls: "auto-linker-reject-details" });
-    vaultDetails.createEl("summary", { text: `Vault Rejections (${vaultRejects.length})` });
+    const vaultDetails = this.makeDetails(containerEl, "vault", `Vault Rejections (${vaultRejects.length})`, false);
     if (vaultRejects.length === 0) {
       vaultDetails.createEl("p", { cls: "auto-linker-settings-empty", text: "None." });
     } else {
-      const list = vaultDetails.createEl("div", { cls: "auto-linker-reject-table" });
-      for (const entry of vaultRejects) this.renderRow(list, entry);
+      for (const entry of vaultRejects) this.renderRow(vaultDetails, entry);
     }
 
     // Note Rejections — one submenu per origin note
@@ -75,37 +70,63 @@ export class AutoLinkerSettingTab extends PluginSettingTab {
       groups.set(r.notePath as string, arr);
     }
 
-    const noteDetails = containerEl.createEl("details", { cls: "auto-linker-reject-details" });
-    noteDetails.createEl("summary", { text: `Note Rejections (${noteRejects.length})` });
+    const noteDetails = this.makeDetails(containerEl, "notes", `Note Rejections (${noteRejects.length})`, true);
     if (groups.size === 0) {
       noteDetails.createEl("p", { cls: "auto-linker-settings-empty", text: "None." });
     } else {
-      for (const [, rows] of groups) {
-        const sub = noteDetails.createEl("details", { cls: "auto-linker-reject-subdetails" });
-        sub.createEl("summary", { text: `${rows[0].noteName} (${rows.length})` });
-        const list = sub.createEl("div", { cls: "auto-linker-reject-table" });
-        for (const entry of rows) this.renderRow(list, entry);
+      for (const [notePath, rows] of groups) {
+        const sub = this.makeDetails(noteDetails, `note:${notePath}`, `${rows[0].noteName} (${rows.length})`, false, true);
+        for (const entry of rows) this.renderRow(sub, entry);
       }
     }
   }
 
-  private renderRow(list: HTMLElement, entry: RejectRow) {
-    const row = list.createEl("div", { cls: "auto-linker-reject-table-row" });
-    row.createEl("span", {
-      cls:  "auto-linker-reject-table-label",
-      text: `"${entry.span}" → ${entry.targetName}`,
+  /**
+   * Create a <details> whose open state is tracked in `openKeys`.
+   * `cascade` = closing this group also collapses any nested groups.
+   */
+  private makeDetails(parent: HTMLElement, key: string, label: string, cascade: boolean, sub = false): HTMLElement {
+    const details = parent.createEl("details", {
+      cls: sub ? "auto-linker-reject-subdetails" : "auto-linker-reject-details",
     });
-    const removeBtn = row.createEl("button", {
-      cls:  "auto-linker-reject-table-remove",
-      text: "Remove",
-      attr: { "aria-label": `Remove: "${entry.span}" → ${entry.targetName}` },
+    details.setAttribute("data-al-key", key);
+    details.open = this.openKeys.has(key);
+    details.createEl("summary", { text: label });
+
+    details.addEventListener("toggle", () => {
+      if (details.open) {
+        this.openKeys.add(key);
+      } else {
+        this.openKeys.delete(key);
+        if (cascade) {
+          // Closing a top-level group collapses its submenus too.
+          details.querySelectorAll("details").forEach((d) => {
+            d.open = false;
+            const k = d.getAttribute("data-al-key");
+            if (k) this.openKeys.delete(k);
+          });
+        }
+      }
     });
-    removeBtn.addEventListener("click", async () => {
-      const linker = this.plugin.autoLinker;
-      if (!linker) return;
-      linker.removeFromRejectList(entry.span, entry.targetPath, entry.notePath);
-      await this.plugin.persistAutoLinker();
-      this.display();
-    });
+
+    return details;
+  }
+
+  private renderRow(parent: HTMLElement, entry: RejectRow) {
+    new Setting(parent)
+      .setName(`"${entry.span}" → ${entry.targetName}`)
+      .addButton((btn) =>
+        btn
+          .setButtonText("Restore")
+          .setTooltip("Make this suggestion appear again")
+          .onClick(async () => {
+            const linker = this.plugin.autoLinker;
+            if (!linker) return;
+            linker.removeFromRejectList(entry.span, entry.targetPath, entry.notePath);
+            await this.plugin.persistAutoLinker();
+            // openKeys persists, so re-rendering keeps the open submenus open.
+            this.display();
+          })
+      );
   }
 }

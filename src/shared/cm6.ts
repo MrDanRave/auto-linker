@@ -415,6 +415,11 @@ export function injectCM6Styles(doc: Document) {
     .auto-linker-preview h2,
     .auto-linker-preview h3 { font-size: 13px; }
     .auto-linker-preview ul { padding-left: 18px; }
+    /* This is a read-only preview — strip MarkdownRenderer's copy / edit
+       buttons (e.g. the code-block copy button on indented lines). */
+    .auto-linker-preview button,
+    .auto-linker-preview .copy-code-button,
+    .auto-linker-preview .edit-block-button { display: none !important; }
   `;
   doc.head.appendChild(style);
 }
