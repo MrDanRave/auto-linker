@@ -202,7 +202,14 @@ function makeTooltipForId(
         approve.addEventListener("click", () => callbacks.onApprove(hit.meta));
         reject.addEventListener("click",  () => callbacks.onReject(hit.meta));
 
-        return { dom };
+        return {
+          dom,
+          // Tag CodeMirror's wrapper element directly so our theme reset and
+          // arrow-hide don't depend on the :has() selector matching.
+          mount() {
+            dom.parentElement?.classList.add("auto-linker-cm-wrap");
+          },
+        };
       },
     },
   ];
@@ -324,30 +331,30 @@ export function injectCM6Styles(doc: Document) {
       cursor: pointer;
     }
 
-    /* Reset CodeMirror's tooltip chrome — the visible box is the inner div,
-       which is styled purely from Obsidian theme variables so it can never
-       render with the wrong (reversed) theme or invisible text. */
-    .cm-tooltip:has(.auto-linker-tooltip) {
+    /* Reset CodeMirror's tooltip chrome (light bg + arrow). We tag the wrapper
+       in mount() instead of using :has(), which was failing to match. */
+    .cm-tooltip.auto-linker-cm-wrap {
       background: transparent !important;
       border: none !important;
       box-shadow: none !important;
+      padding: 0 !important;
     }
-    .cm-tooltip:has(.auto-linker-tooltip) .cm-tooltip-arrow {
-      display: none !important;
-    }
+    .cm-tooltip.auto-linker-cm-wrap .cm-tooltip-arrow { display: none !important; }
 
+    /* The visible box is the inner div — colors forced so CodeMirror's own
+       light tooltip theme can never win and leave invisible/reversed text. */
     .auto-linker-tooltip {
       display: flex;
       flex-direction: column;
       gap: 4px;
       padding: 6px 8px;
-      background: var(--background-secondary);
-      color: var(--text-normal);
+      background: var(--background-secondary) !important;
+      color: var(--text-normal) !important;
       border: 1px solid var(--background-modifier-border);
       border-radius: 6px;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.35);
+      max-width: min(340px, 90vw);
     }
-    .theme-dark  .auto-linker-tooltip { box-shadow: 0 2px 12px rgba(0,0,0,0.45); }
-    .theme-light .auto-linker-tooltip { box-shadow: 0 2px 8px  rgba(0,0,0,0.12); }
 
     .auto-linker-tooltip-row {
       display: flex;
@@ -358,7 +365,7 @@ export function injectCM6Styles(doc: Document) {
       font-size: 12px;
       color: var(--text-accent);
       font-style: italic;
-      max-width: 200px;
+      max-width: 220px;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
@@ -388,12 +395,14 @@ export function injectCM6Styles(doc: Document) {
     .auto-linker-btn-eye svg { width: 14px; height: 14px; }
     .auto-linker-btn-eye:hover { background: var(--interactive-accent); color: #fff; }
 
-    /* Preview pane — rendered markdown, appears below the row on eye hover */
+    /* Preview pane — rendered markdown, wraps + scrolls instead of clipping */
     .auto-linker-preview {
       display: none;
-      max-width: 300px;
-      max-height: 160px;
+      width: 100%;
+      max-height: 180px;
       overflow-y: auto;
+      overflow-wrap: anywhere;
+      white-space: normal;
       border-top: 1px solid var(--background-modifier-border);
       padding-top: 5px;
       margin-top: 2px;
@@ -401,11 +410,11 @@ export function injectCM6Styles(doc: Document) {
       color: var(--text-normal);
       line-height: 1.5;
     }
-    .auto-linker-preview p { margin: 0 0 4px 0; }
+    .auto-linker-preview > * { margin: 0 0 4px 0 !important; }
     .auto-linker-preview h1,
     .auto-linker-preview h2,
-    .auto-linker-preview h3 { margin: 2px 0; font-size: 13px; }
-    .auto-linker-preview ul { margin: 0; padding-left: 18px; }
+    .auto-linker-preview h3 { font-size: 13px; }
+    .auto-linker-preview ul { padding-left: 18px; }
   `;
   doc.head.appendChild(style);
 }

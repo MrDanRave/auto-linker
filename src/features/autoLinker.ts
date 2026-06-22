@@ -340,11 +340,11 @@ export class RejectStagingPanel {
     const header = this.el.createEl("div", { cls: "auto-linker-reject-panel-headerbar" });
     header.createEl("span", {
       cls:  "auto-linker-reject-panel-title",
-      text: `Permanently reject these suggestions? (${this.items.length})`,
+      text: `Reject across entire vault? (${this.items.length})`,
     });
     const minBtn = header.createEl("button", {
       cls:  "auto-linker-reject-min",
-      text: this.minimized ? "▢" : "—",
+      text: this.minimized ? "+" : "−",
       attr: { "aria-label": this.minimized ? "Expand" : "Minimize" },
     });
     minBtn.addEventListener("click", () => { this.minimized = !this.minimized; this.render(); });
@@ -363,7 +363,7 @@ export class RejectStagingPanel {
     for (const [, groupItems] of groups) {
       body.createEl("div", {
         cls:  "auto-linker-reject-group-label",
-        text: `[${groupItems[0].noteName}]`,
+        text: groupItems[0].noteName,
       });
 
       for (const item of groupItems) {
@@ -603,23 +603,22 @@ export function injectAutoLinkerStyles(doc: Document) {
     }
     .auto-linker-reject-panel-title {
       flex: 1;
-      font-size: 11px;
+      font-size: 13px;
       font-weight: 600;
-      color: var(--text-muted);
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
+      color: var(--text-normal);
     }
     .auto-linker-reject-min {
-      font-size: 12px;
+      font-size: 20px;
+      font-weight: 900;
       line-height: 1;
-      padding: 2px 7px;
-      border-radius: 3px;
-      border: 1px solid var(--background-modifier-border);
-      background: var(--background-secondary);
+      padding: 0 6px;
+      border: none;
+      background: none;
+      box-shadow: none;
       color: var(--text-normal);
       cursor: pointer;
     }
-    .auto-linker-reject-min:hover { background: var(--background-modifier-hover); }
+    .auto-linker-reject-min:hover { color: var(--text-accent); background: none; }
 
     .auto-linker-reject-panel-body {
       display: flex;
@@ -630,9 +629,9 @@ export function injectAutoLinkerStyles(doc: Document) {
       margin-bottom: 10px;
     }
     .auto-linker-reject-group-label {
-      font-size: 11px;
-      font-weight: 600;
-      color: var(--text-accent);
+      font-size: 12px;
+      font-style: italic;
+      color: var(--text-muted);
       margin: 6px 0 2px 0;
     }
     .auto-linker-reject-group-label:first-child { margin-top: 0; }
@@ -669,10 +668,10 @@ export function injectAutoLinkerStyles(doc: Document) {
       transition: background 0.1s, color 0.1s;
     }
     .auto-linker-reject-yes:hover,
-    .auto-linker-reject-yes-all:hover { background: var(--color-red);   color: #fff; }
-    .auto-linker-reject-restore:hover  { background: var(--color-green); color: #fff; }
+    .auto-linker-reject-yes-all:hover { background: var(--color-green); color: #fff; }
+    .auto-linker-reject-restore:hover { background: var(--color-red);   color: #fff; }
     .auto-linker-reject-no:hover,
-    .auto-linker-reject-no-all:hover  { background: var(--background-modifier-hover); }
+    .auto-linker-reject-no-all:hover  { background: var(--color-purple, var(--interactive-accent)); color: #fff; }
 
     /* ── Settings page reject table ───────────────────────────────── */
     .auto-linker-settings-desc {
@@ -684,6 +683,30 @@ export function injectAutoLinkerStyles(doc: Document) {
       font-size: 13px;
       color: var(--text-faint);
       font-style: italic;
+      margin: 4px 0 4px 12px;
+    }
+    .auto-linker-reject-details {
+      margin-bottom: 10px;
+      border: 1px solid var(--background-modifier-border);
+      border-radius: 6px;
+      padding: 6px 10px;
+    }
+    .auto-linker-reject-details > summary {
+      cursor: pointer;
+      font-weight: 600;
+      font-size: 13px;
+      color: var(--text-normal);
+    }
+    .auto-linker-reject-subdetails {
+      margin: 6px 0 6px 8px;
+      border-left: 2px solid var(--background-modifier-border);
+      padding-left: 8px;
+    }
+    .auto-linker-reject-subdetails > summary {
+      cursor: pointer;
+      font-size: 12px;
+      font-style: italic;
+      color: var(--text-muted);
     }
     .auto-linker-reject-table {
       display: flex;

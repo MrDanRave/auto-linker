@@ -22,6 +22,15 @@ export default class AutoLinkerPlugin extends Plugin {
     injectCM6Styles(document);
     injectAutoLinkerStyles(document);
 
+    // Popout windows have their own document — inject there too.
+    this.registerEvent(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      this.app.workspace.on("window-open" as any, (...args: any[]) => {
+        const doc = (args[1] as Window | undefined)?.document ?? (args[0] as { doc?: Document })?.doc;
+        if (doc) { injectCM6Styles(doc); injectAutoLinkerStyles(doc); }
+      })
+    );
+
     if (this.settings.enableAutoLinker) {
       const linker = new AutoLinker(this.app);
       this.autoLinker = linker;
