@@ -1,0 +1,10 @@
+node_modules/
+
+# Build artifact — uploaded to each GitHub release by the CI workflow
+main.js
+
+# Vault-specific plugin data (reject list, settings); never commit
+data.json
+
+# Dev source maps
+*.map

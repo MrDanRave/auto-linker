@@ -26,23 +26,28 @@ export interface DecorationMeta {
   data: unknown;
 }
 
-export const addDecoEffect = StateEffect.define<DecorationMeta>();
+export const addDecoEffect    = StateEffect.define<DecorationMeta>();
 export const removeDecoEffect = StateEffect.define<{ id: string }>();
 export const clearDecosEffect = StateEffect.define<null>();
 
+/** Removes all decorations whose data.span + data.targetPath match. */
+export const removeBySpanTargetEffect = StateEffect.define<{ span: string; targetPath: string }>();
+
 // ---------------------------------------------------------------------------
-// Callbacks invoked by the hover tooltip's approve/reject buttons
+// Callbacks invoked by the hover tooltip
 // ---------------------------------------------------------------------------
 
 export type WidgetAction = "approve" | "reject";
 
 export interface WidgetCallbacks {
   onApprove: (meta: DecorationMeta) => void;
-  onReject: (meta: DecorationMeta) => void;
+  onReject:  (meta: DecorationMeta) => void;
+  onPreview: (targetPath: string) => Promise<string>;
+  onOpen:    (targetPath: string) => void;
 }
 
 // ---------------------------------------------------------------------------
-// StateField — holds the active decoration set, keyed by DecorationMeta.id
+// StateField — holds the active decoration set
 // ---------------------------------------------------------------------------
 
 interface StoredDeco {
@@ -79,7 +84,7 @@ export function createDecoField(): SuggestionField {
         meta: {
           ...s.meta,
           from: tr.changes.mapPos(s.meta.from),
-          to: tr.changes.mapPos(s.meta.to),
+          to:   tr.changes.mapPos(s.meta.to),
         },
       }));
 
@@ -87,14 +92,10 @@ export function createDecoField(): SuggestionField {
         const dirty = new Set<string>();
         tr.changes.iterChangedRanges((_fromA, _toA, fromB, toB) => {
           for (const s of updated) {
-            if (s.meta.from < toB && s.meta.to > fromB) {
-              dirty.add(s.meta.id);
-            }
+            if (s.meta.from < toB && s.meta.to > fromB) dirty.add(s.meta.id);
           }
         });
-        if (dirty.size > 0) {
-          updated = updated.filter((s) => !dirty.has(s.meta.id));
-        }
+        if (dirty.size > 0) updated = updated.filter((s) => !dirty.has(s.meta.id));
       }
 
       for (const effect of tr.effects) {
@@ -102,12 +103,21 @@ export function createDecoField(): SuggestionField {
           updated = [];
         } else if (effect.is(removeDecoEffect)) {
           updated = updated.filter((s) => s.meta.id !== effect.value.id);
+        } else if (effect.is(removeBySpanTargetEffect)) {
+          const { span, targetPath } = effect.value;
+          updated = updated.filter((s) => {
+            const d = s.meta.data as { span?: string; targetPath?: string } | undefined;
+            return !(d?.span === span && d?.targetPath === targetPath);
+          });
         } else if (effect.is(addDecoEffect)) {
           const meta = effect.value;
           updated = updated.filter((s) => s.meta.id !== meta.id);
           updated.push({
             meta,
-            mark: Decoration.mark({ class: "auto-linker-suggestion", attributes: { "data-deco-id": meta.id } }),
+            mark: Decoration.mark({
+              class: "auto-linker-suggestion",
+              attributes: { "data-deco-id": meta.id },
+            }),
           });
         }
       }
@@ -122,11 +132,11 @@ export function createDecoField(): SuggestionField {
 }
 
 // ---------------------------------------------------------------------------
-// Hover-driven tooltip
+// Hover tooltip — target label, eye preview, approve, reject
 // ---------------------------------------------------------------------------
 
 const setHoveredEffect = StateEffect.define<string | null>();
-const HIDE_DELAY_MS = 220;
+const HIDE_DELAY_MS    = 220;
 
 function makeTooltipForId(
   state: EditorState,
@@ -141,27 +151,51 @@ function makeTooltipForId(
 
   return [
     {
-      pos: hit.meta.from,
+      pos:   hit.meta.from,
       above: true,
-      arrow: true,
+      arrow: false,
       create: () => {
         const dom = document.createElement("div");
         dom.className = "auto-linker-tooltip";
 
-        const data = hit.meta.data as { targetName?: string } | undefined;
+        const data       = hit.meta.data as { targetName?: string; targetPath?: string } | undefined;
         const targetName = data?.targetName ?? "link";
+        const targetPath = data?.targetPath ?? "";
 
         const row = dom.createEl("div", { cls: "auto-linker-tooltip-row" });
         row.createEl("span", { cls: "auto-linker-target-label", text: `→ ${targetName}` });
 
+        const eye     = row.createEl("button", { cls: "auto-linker-btn auto-linker-btn-eye",     attr: { "aria-label": "Preview note" } });
         const approve = row.createEl("button", { cls: "auto-linker-btn auto-linker-btn-approve", text: "✓" });
-        const reject = row.createEl("button", { cls: "auto-linker-btn auto-linker-btn-reject", text: "✗" });
+        const reject  = row.createEl("button", { cls: "auto-linker-btn auto-linker-btn-reject",  text: "✗" });
+
+        const preview = dom.createEl("div", { cls: "auto-linker-preview" });
 
         const noFocus = (e: MouseEvent) => e.preventDefault();
+        eye.addEventListener("mousedown",     noFocus);
         approve.addEventListener("mousedown", noFocus);
-        reject.addEventListener("mousedown", noFocus);
+        reject.addEventListener("mousedown",  noFocus);
+
+        // Eye hover: expand preview pane and load content once
+        let previewLoaded = false;
+        eye.addEventListener("mouseenter", async () => {
+          preview.style.display = "block";
+          if (!previewLoaded) {
+            preview.setText("Loading…");
+            try {
+              const text = await callbacks.onPreview(targetPath);
+              preview.setText(text.trim() || "(empty note)");
+            } catch {
+              preview.setText("(could not load preview)");
+            }
+            previewLoaded = true;
+          }
+        });
+        // Eye click: open the note
+        eye.addEventListener("click", () => callbacks.onOpen(targetPath));
+
         approve.addEventListener("click", () => callbacks.onApprove(hit.meta));
-        reject.addEventListener("click", () => callbacks.onReject(hit.meta));
+        reject.addEventListener("click",  () => callbacks.onReject(hit.meta));
 
         return { dom };
       },
@@ -196,10 +230,7 @@ export function createSuggestionTooltip(field: SuggestionField, callbacks: Widge
       }
 
       private cancelHide() {
-        if (this.hideTimer !== null) {
-          clearTimeout(this.hideTimer);
-          this.hideTimer = null;
-        }
+        if (this.hideTimer !== null) { clearTimeout(this.hideTimer); this.hideTimer = null; }
       }
 
       private scheduleHide() {
@@ -216,20 +247,15 @@ export function createSuggestionTooltip(field: SuggestionField, callbacks: Widge
         const target = e.target as HTMLElement | null;
         if (!target || !target.closest) return;
 
-        if (target.closest(".auto-linker-tooltip")) {
-          this.cancelHide();
-          return;
-        }
+        if (target.closest(".auto-linker-tooltip")) { this.cancelHide(); return; }
 
-        const mark = target.closest(".auto-linker-suggestion") as HTMLElement | null;
-        const id = mark?.getAttribute("data-deco-id") ?? null;
+        const mark    = target.closest(".auto-linker-suggestion") as HTMLElement | null;
+        const id      = mark?.getAttribute("data-deco-id") ?? null;
         const current = this.view.state.field(hoveredField, false) ?? null;
 
         if (id && this.view.dom.contains(mark)) {
           this.cancelHide();
-          if (id !== current) {
-            this.view.dispatch({ effects: setHoveredEffect.of(id) });
-          }
+          if (id !== current) this.view.dispatch({ effects: setHoveredEffect.of(id) });
         } else if (current) {
           this.scheduleHide();
         }
@@ -249,11 +275,7 @@ export function createSuggestionTooltip(field: SuggestionField, callbacks: Widge
 // ViewPlugin — debounced dirty-region reporter
 // ---------------------------------------------------------------------------
 
-export interface DirtyRegion {
-  from: number;
-  to: number;
-}
-
+export interface DirtyRegion { from: number; to: number; }
 export type OnDirtyRegion = (view: EditorView, region: DirtyRegion) => void;
 
 export function createDebouncedViewPlugin(onDirty: OnDirtyRegion, debounceMs = 600) {
@@ -263,29 +285,21 @@ export function createDebouncedViewPlugin(onDirty: OnDirtyRegion, debounceMs = 6
 
       update(update: ViewUpdate) {
         if (!update.docChanged) return;
-
         if (this.timer !== null) clearTimeout(this.timer);
 
         let from = update.view.viewport.from;
-        let to = update.view.viewport.to;
-
+        let to   = update.view.viewport.to;
         update.changes.iterChangedRanges((_fA, _tA, fB, tB) => {
           if (fB < from) from = fB;
-          if (tB > to) to = tB;
+          if (tB > to)   to   = tB;
         });
 
         const region: DirtyRegion = { from, to };
         const view = update.view;
-
-        this.timer = setTimeout(() => {
-          this.timer = null;
-          onDirty(view, region);
-        }, debounceMs);
+        this.timer = setTimeout(() => { this.timer = null; onDirty(view, region); }, debounceMs);
       }
 
-      destroy() {
-        if (this.timer !== null) clearTimeout(this.timer);
-      }
+      destroy() { if (this.timer !== null) clearTimeout(this.timer); }
     }
   );
 }
@@ -304,25 +318,17 @@ export function injectCM6Styles(doc: Document) {
       padding-bottom: 1px;
       cursor: pointer;
     }
+
+    /* Tooltip container — theme-aware via Obsidian CSS variables */
     .cm-tooltip:has(.auto-linker-tooltip) {
       background: var(--background-secondary) !important;
       border: 1px solid var(--background-modifier-border) !important;
       border-radius: 6px;
       color: var(--text-normal);
-      box-shadow: 0 2px 12px rgba(0,0,0,0.4);
     }
-    .cm-tooltip:has(.auto-linker-tooltip).cm-tooltip-above .cm-tooltip-arrow:before {
-      border-top-color: var(--background-modifier-border) !important;
-    }
-    .cm-tooltip:has(.auto-linker-tooltip).cm-tooltip-above .cm-tooltip-arrow:after {
-      border-top-color: var(--background-secondary) !important;
-    }
-    .cm-tooltip:has(.auto-linker-tooltip).cm-tooltip-below .cm-tooltip-arrow:before {
-      border-bottom-color: var(--background-modifier-border) !important;
-    }
-    .cm-tooltip:has(.auto-linker-tooltip).cm-tooltip-below .cm-tooltip-arrow:after {
-      border-bottom-color: var(--background-secondary) !important;
-    }
+    .theme-dark  .cm-tooltip:has(.auto-linker-tooltip) { box-shadow: 0 2px 12px rgba(0,0,0,0.45); }
+    .theme-light .cm-tooltip:has(.auto-linker-tooltip) { box-shadow: 0 2px 8px  rgba(0,0,0,0.12); }
+
     .auto-linker-tooltip {
       display: flex;
       flex-direction: column;
@@ -339,12 +345,14 @@ export function injectCM6Styles(doc: Document) {
       font-size: 12px;
       color: var(--text-accent);
       font-style: italic;
-      max-width: 220px;
+      max-width: 200px;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
       flex: 1;
     }
+
+    /* Shared button base */
     .auto-linker-btn {
       font-size: 12px;
       padding: 1px 7px;
@@ -357,6 +365,26 @@ export function injectCM6Styles(doc: Document) {
     }
     .auto-linker-btn-approve:hover { background: var(--color-green); color: #fff; }
     .auto-linker-btn-reject:hover  { background: var(--color-red);   color: #fff; }
+
+    /* Eye button */
+    .auto-linker-btn-eye::before { content: "👁"; }
+    .auto-linker-btn-eye { font-size: 13px; padding: 0 5px; line-height: 1.6; }
+    .auto-linker-btn-eye:hover { background: var(--interactive-accent); color: #fff; }
+
+    /* Preview pane — appears below the button row on eye hover */
+    .auto-linker-preview {
+      display: none;
+      font-size: 11px;
+      color: var(--text-muted);
+      white-space: pre-wrap;
+      max-width: 280px;
+      max-height: 120px;
+      overflow-y: auto;
+      border-top: 1px solid var(--background-modifier-border);
+      padding-top: 5px;
+      margin-top: 2px;
+      line-height: 1.5;
+    }
   `;
   doc.head.appendChild(style);
 }

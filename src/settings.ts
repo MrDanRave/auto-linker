@@ -22,9 +22,10 @@ export class AutoLinkerSettingTab extends PluginSettingTab {
     containerEl.empty();
     containerEl.createEl("h2", { text: "Auto Linker Settings" });
 
+    // ── Feature toggle ────────────────────────────────────────────────────
     new Setting(containerEl)
       .setName("Auto-linker")
-      .setDesc("Enable semantic auto-linking (underlines text matching a note title and offers one-click wiki-link insertion).")
+      .setDesc("Underlines text matching a note title and offers one-click wiki-link insertion.")
       .addToggle((toggle) =>
         toggle
           .setValue(this.plugin.settings.enableAutoLinker)
@@ -33,5 +34,49 @@ export class AutoLinkerSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           })
       );
+
+    // ── Rejected suggestions browser ─────────────────────────────────────
+    const linker = this.plugin.autoLinker;
+    if (!linker) return;
+
+    containerEl.createEl("h3", { text: "Rejected Suggestions" });
+
+    const rejectList = linker.getRejectList();
+
+    if (rejectList.length === 0) {
+      containerEl.createEl("p", {
+        cls:  "auto-linker-settings-empty",
+        text: "No permanently rejected suggestions.",
+      });
+      return;
+    }
+
+    containerEl.createEl("p", {
+      cls:  "auto-linker-settings-desc",
+      text: `${rejectList.length} suggestion${rejectList.length === 1 ? "" : "s"} permanently rejected. Removing an entry makes it suggestable again.`,
+    });
+
+    const table = containerEl.createEl("div", { cls: "auto-linker-reject-table" });
+
+    for (const entry of rejectList) {
+      const row = table.createEl("div", { cls: "auto-linker-reject-table-row" });
+
+      row.createEl("span", {
+        cls:  "auto-linker-reject-table-label",
+        text: `"${entry.span}" → ${entry.targetName}`,
+      });
+
+      const removeBtn = row.createEl("button", {
+        cls:  "auto-linker-reject-table-remove",
+        text: "Remove",
+        attr: { "aria-label": `Remove: "${entry.span}" → ${entry.targetName}` },
+      });
+
+      removeBtn.addEventListener("click", async () => {
+        linker.removeFromRejectList(entry.span, entry.targetPath);
+        await this.plugin.persistAutoLinker();
+        this.display(); // re-render
+      });
+    }
   }
 }

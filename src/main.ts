@@ -1,18 +1,26 @@
 import { Plugin } from "obsidian";
 import { DEFAULT_SETTINGS, AutoLinkerSettings, AutoLinkerSettingTab } from "./settings";
-import { AutoLinker, buildAutoLinkerExtensions, scanFullNote } from "./features/autoLinker";
+import {
+  AutoLinker,
+  RejectStagingPanel,
+  buildAutoLinkerExtensions,
+  scanFullNote,
+  injectAutoLinkerStyles,
+} from "./features/autoLinker";
 import { injectCM6Styles } from "./shared/cm6";
 import { EditorView } from "@codemirror/view";
 
 export default class AutoLinkerPlugin extends Plugin {
   settings: AutoLinkerSettings;
-  private autoLinker: AutoLinker | null = null;
+  autoLinker: AutoLinker | null = null;
+  private stagingPanel: RejectStagingPanel | null = null;
 
   async onload() {
     await this.loadSettings();
     this.addSettingTab(new AutoLinkerSettingTab(this.app, this));
 
     injectCM6Styles(document);
+    injectAutoLinkerStyles(document);
 
     if (this.settings.enableAutoLinker) {
       const linker = new AutoLinker(this.app);
@@ -25,7 +33,10 @@ export default class AutoLinkerPlugin extends Plugin {
       const persistFn = () =>
         linker.save(() => this.loadData(), (d) => this.saveData(d));
 
-      const extensions = buildAutoLinkerExtensions(this.app, linker, persistFn);
+      const panel = new RejectStagingPanel(this.app, linker, persistFn);
+      this.stagingPanel = panel;
+
+      const extensions = buildAutoLinkerExtensions(this.app, linker, panel, persistFn);
       this.registerEditorExtension(extensions);
 
       this.registerEvent(
@@ -38,34 +49,12 @@ export default class AutoLinkerPlugin extends Plugin {
           }, 200);
         })
       );
-
-      this.addCommand({
-        id: "auto-linker-scan-vault",
-        name: "Auto Linker: scan entire vault for link suggestions",
-        callback: () => this.runVaultScan(linker, persistFn),
-      });
     }
   }
 
-  private async runVaultScan(linker: AutoLinker, persistFn: () => void) {
-    const files = this.app.vault.getMarkdownFiles();
-    let i = 0;
-
-    const tick = async () => {
-      if (i >= files.length) {
-        persistFn();
-        return;
-      }
-      const file = files[i++];
-      const content = await this.app.vault.cachedRead(file);
-      linker.scan(content, 0, file.path);
-      setTimeout(tick, 0);
-    };
-
-    setTimeout(tick, 0);
+  onunload() {
+    this.stagingPanel?.destroy();
   }
-
-  onunload() {}
 
   async loadSettings() {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
@@ -73,5 +62,12 @@ export default class AutoLinkerPlugin extends Plugin {
 
   async saveSettings() {
     await this.saveData(this.settings);
+  }
+
+  /** Persist the auto-linker reject list (called from settings UI after un-rejecting). */
+  async persistAutoLinker(): Promise<void> {
+    if (this.autoLinker) {
+      await this.autoLinker.save(() => this.loadData(), (d) => this.saveData(d));
+    }
   }
 }
