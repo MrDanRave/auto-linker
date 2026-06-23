@@ -1,6 +1,7 @@
 import { App, TFile, Component, MarkdownRenderer } from "obsidian";
 import { EditorView } from "@codemirror/view";
 import { Token, tokenize, analyzeCase, detectLang, stem, commonness } from "./nlp";
+import { GraphScorer } from "./graph";
 import {
   addDecoEffect,
   removeDecoEffect,
@@ -289,7 +290,8 @@ export function scoreRegion(
   activeFilePath: string,
   index: TitleIndex,
   rejectList: RejectEntry[],
-  sensitivity: number
+  sensitivity: number,
+  graphScorer?: GraphScorer
 ): ScoredSuggestion[] {
   const threshold = computeThreshold01(sensitivity);
 
@@ -321,12 +323,13 @@ export function scoreRegion(
     if (hits) for (const p of hits) candidatePathSet.add(p);
   }
 
-  // Renormalize weights (graph=0, sem=0 in Phase 2)
+  // Renormalize weights — include graph when scorer is available; sem=0 until Phase 4
   const W        = SCORING.weights;
-  const activeW  = W.lex + W.sig + W.case;
-  const wLex     = W.lex  / activeW;
-  const wSig     = W.sig  / activeW;
-  const wCase    = W.case / activeW;
+  const activeW  = W.lex + W.sig + W.case + (graphScorer ? W.graph : 0);
+  const wLex     = W.lex   / activeW;
+  const wSig     = W.sig   / activeW;
+  const wCase    = W.case  / activeW;
+  const wGraph   = graphScorer ? W.graph / activeW : 0;
 
   const lowerText = text.toLowerCase();
   const scored: ScoredSuggestion[] = [];
@@ -384,14 +387,16 @@ export function scoreRegion(
           } else if (caseA.type === "titlecase" && caseA.isSentenceStart) {
             caseScore = 0.0; // could just be sentence-start capital
           } else if (caseA.type === "lower") {
-            // Penalty only for truly common function words (HIGH_FREQ, commonness 0.9)
+            // Penalty for truly common function words (HIGH_FREQ, commonness 0.9).
+            // -1.5 (not -1.0) so the penalty holds even when graph score is maximal.
             const maxCommon = Math.max(...spanTokens.map((t) => commonness(t, lang)));
-            caseScore = maxCommon > 0.5 ? -1.0 : 0.0;
+            caseScore = maxCommon > 0.5 ? -1.5 : 0.0;
           } else {
             caseScore = 0.0;
           }
 
-          const confidence = wLex * lexScore + wSig * sigScore + wCase * caseScore;
+          const gScore     = graphScorer ? graphScorer.getScore(targetPath) : 0;
+          const confidence = wLex * lexScore + wSig * sigScore + wCase * caseScore + wGraph * gScore;
 
           if (confidence >= threshold) {
             scored.push({
@@ -428,11 +433,13 @@ export function scoreRegion(
 
 export class AutoLinker {
   readonly titleIndex: TitleIndex;
+  readonly graphScorer: GraphScorer;
   private rejectList: RejectEntry[] = [];
   private readonly DATA_KEY = "autoLinker";
 
   constructor(private app: App) {
-    this.titleIndex = new TitleIndex(app);
+    this.titleIndex  = new TitleIndex(app);
+    this.graphScorer = new GraphScorer(app);
   }
 
   async load(loadData: () => Promise<Record<string, unknown> | null>) {
@@ -447,8 +454,16 @@ export class AutoLinker {
   }
 
   buildWhenReady() {
-    this.app.metadataCache.on("resolved", () => this.titleIndex.build());
-    this.app.workspace.onLayoutReady(() => this.titleIndex.build());
+    // "resolved" fires when Obsidian has fully resolved all inter-note links.
+    // Rebuild both the title index (fresh aliases) and graph (fresh link graph).
+    this.app.metadataCache.on("resolved", () => {
+      this.titleIndex.build();
+      this.graphScorer.build();
+    });
+    this.app.workspace.onLayoutReady(() => {
+      this.titleIndex.build();
+      // Graph build is deferred to the next "resolved" event which fires shortly after.
+    });
   }
 
   async save(
@@ -466,6 +481,8 @@ export class AutoLinker {
       // remove-then-add so renamed/removed aliases don't linger
       this.titleIndex.removeFile(file);
       this.titleIndex.addFile(file);
+      // Links in this file may have changed → debounce a graph rebuild
+      this.graphScorer.scheduleRebuild();
     }));
     registerEvent(this.app.metadataCache.on("deleted", (file) => this.titleIndex.removeFile(file)));
     registerEvent(this.app.vault.on("rename", (file, oldPath) => {
@@ -474,7 +491,11 @@ export class AutoLinker {
   }
 
   scan(text: string, regionFrom: number, activeFilePath: string, sensitivity = SCORING.threshold): ScoredSuggestion[] {
-    return scoreRegion(text, regionFrom, activeFilePath, this.titleIndex, this.rejectList, sensitivity);
+    return scoreRegion(text, regionFrom, activeFilePath, this.titleIndex, this.rejectList, sensitivity, this.graphScorer);
+  }
+
+  destroy() {
+    this.graphScorer.destroy();
   }
 
   // ── Reject lifecycle ──────────────────────────────────────────────────────

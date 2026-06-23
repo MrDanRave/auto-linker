@@ -82,6 +82,7 @@ export default class AutoLinkerPlugin extends Plugin {
 
   onunload() {
     this.stagingPanel?.destroy();
+    this.autoLinker?.destroy();
   }
 
   async loadSettings() {
