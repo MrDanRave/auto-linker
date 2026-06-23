@@ -224,8 +224,8 @@ export class AutoLinker {
       this.titleIndex.addFile(file);
     }));
     registerEvent(this.app.metadataCache.on("deleted", (file) => this.titleIndex.removeFile(file)));
-    registerEvent(this.app.vault.on("rename" as "create", (file, oldPath) => {
-      if (file instanceof TFile) this.titleIndex.renameFile(file, oldPath as string);
+    registerEvent(this.app.vault.on("rename", (file, oldPath) => {
+      if (file instanceof TFile) this.titleIndex.renameFile(file, oldPath);
     }));
   }
 
@@ -480,7 +480,7 @@ export function buildAutoLinkerExtensions(
 ) {
   const callbacks: WidgetCallbacks = {
     onApprove: (meta: DecorationMeta) => {
-      const view = app.workspace.activeEditor?.editor?.cm as EditorView | undefined;
+      const view = (app.workspace.activeEditor?.editor as any)?.cm as EditorView | undefined;
       if (!view) return;
       const data = meta.data as { span: string; targetName: string; targetPath: string };
       const replacement = `[[${data.targetPath.replace(/\.md$/, "")}|${data.span}]]`;
@@ -491,7 +491,7 @@ export function buildAutoLinkerExtensions(
     },
 
     onReject: (meta: DecorationMeta) => {
-      const view = app.workspace.activeEditor?.editor?.cm as EditorView | undefined;
+      const view = (app.workspace.activeEditor?.editor as any)?.cm as EditorView | undefined;
       if (!view) return;
       const data = meta.data as { span: string; targetPath: string; targetName: string };
       const activeFile = app.workspace.getActiveFile();

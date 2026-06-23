@@ -11,7 +11,7 @@ import { injectCM6Styles } from "./shared/cm6";
 import { EditorView } from "@codemirror/view";
 
 export default class AutoLinkerPlugin extends Plugin {
-  settings: AutoLinkerSettings;
+  settings: AutoLinkerSettings = { ...DEFAULT_SETTINGS };
   autoLinker: AutoLinker | null = null;
   private stagingPanel: RejectStagingPanel | null = null;
 
@@ -74,7 +74,7 @@ export default class AutoLinkerPlugin extends Plugin {
     if (!this.autoLinker) return;
     const file = this.app.workspace.getActiveFile();
     if (!file) return;
-    const cm = this.app.workspace.activeEditor?.editor?.cm as EditorView | undefined;
+    const cm = (this.app.workspace.activeEditor?.editor as any)?.cm as EditorView | undefined;
     if (!cm) return;
     scanFullNote(cm, file, this.autoLinker);
   }
