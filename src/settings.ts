@@ -3,10 +3,14 @@ import type AutoLinkerPlugin from "./main";
 
 export interface AutoLinkerSettings {
   enableAutoLinker: boolean;
+  /** 0–100; maps to confidence threshold via lerp(0.75, 0.30, t/100).
+   *  0 = strictest (threshold 0.75), 100 = loosest (threshold 0.30), default 55 ≈ 0.50 */
+  sensitivity: number;
 }
 
 export const DEFAULT_SETTINGS: AutoLinkerSettings = {
   enableAutoLinker: true,
+  sensitivity: 55,
 };
 
 interface RejectRow {
@@ -41,6 +45,25 @@ export class AutoLinkerSettingTab extends PluginSettingTab {
           .onChange(async (value) => {
             this.plugin.settings.enableAutoLinker = value;
             await this.plugin.saveSettings();
+          })
+      );
+
+    // ── Sensitivity slider ────────────────────────────────────────────────
+    new Setting(containerEl)
+      .setName("Suggestion sensitivity")
+      .setDesc(
+        "Higher = more suggestions, including weaker matches. " +
+        "Lower = only confident matches."
+      )
+      .addSlider((slider) =>
+        slider
+          .setLimits(0, 100, 1)
+          .setValue(this.plugin.settings.sensitivity)
+          .setDynamicTooltip()
+          .onChange(async (value) => {
+            this.plugin.settings.sensitivity = value;
+            await this.plugin.saveSettings();
+            this.plugin.rescanActiveEditor();
           })
       );
 

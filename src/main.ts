@@ -45,7 +45,7 @@ export default class AutoLinkerPlugin extends Plugin {
       const panel = new RejectStagingPanel(this.app, linker, persistFn, rescanActive);
       this.stagingPanel = panel;
 
-      const extensions = buildAutoLinkerExtensions(this.app, linker, panel, persistFn, this);
+      const extensions = buildAutoLinkerExtensions(this.app, linker, panel, persistFn, this, () => this.settings.sensitivity);
       this.registerEditorExtension(extensions);
 
       // Full-note scan when a file is opened
@@ -55,6 +55,7 @@ export default class AutoLinkerPlugin extends Plugin {
           setTimeout(() => this.rescanActiveEditor(), 200);
         })
       );
+
 
       // When a file is deleted, drop its rejections so a same-named note
       // created later is suggestable again.
@@ -70,13 +71,13 @@ export default class AutoLinkerPlugin extends Plugin {
     }
   }
 
-  private rescanActiveEditor() {
+  rescanActiveEditor() {
     if (!this.autoLinker) return;
     const file = this.app.workspace.getActiveFile();
     if (!file) return;
     const cm = (this.app.workspace.activeEditor?.editor as any)?.cm as EditorView | undefined;
     if (!cm) return;
-    scanFullNote(cm, file, this.autoLinker);
+    scanFullNote(cm, file, this.autoLinker, this.settings.sensitivity);
   }
 
   onunload() {
