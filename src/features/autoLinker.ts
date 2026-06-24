@@ -286,6 +286,8 @@ export class TitleIndex {
 
 const LINK_PATTERN = /\[\[([^\]]+)\]\]/g;
 const TAG_PATTERN  = /#\w+/g;
+// Inline code: a backtick to the next backtick, end-of-line, or end-of-text.
+const BACKTICK_PATTERN = /`[^`\n]*(`|$)/gm;
 
 function targetNameOf(targetPath: string): string {
   return targetPath.split("/").pop()?.replace(/\.md$/, "") ?? targetPath;
@@ -311,6 +313,11 @@ export function scoreRegion(
   while ((m = LINK_PATTERN.exec(text)) !== null) skipRanges.push([m.index, m.index + m[0].length]);
   TAG_PATTERN.lastIndex = 0;
   while ((m = TAG_PATTERN.exec(text)) !== null) skipRanges.push([m.index, m.index + m[0].length]);
+  BACKTICK_PATTERN.lastIndex = 0;
+  while ((m = BACKTICK_PATTERN.exec(text)) !== null) {
+    skipRanges.push([m.index, m.index + m[0].length]);
+    if (m[0].length === 0) BACKTICK_PATTERN.lastIndex++; // guard against zero-width loop
+  }
   const isSkipped = (from: number, to: number) => skipRanges.some(([s, e]) => from < e && to > s);
 
   const lang  = detectLang(text);

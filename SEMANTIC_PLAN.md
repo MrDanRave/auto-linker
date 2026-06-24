@@ -85,6 +85,12 @@ SCORING           { weights: {lex,sig,case,graph,sem}, threshold }
     negative (reject list already exists). A per-(span→target) **acceptance** signal
     personalizes ranking — distinct from PageRank (see Phase 7).
 
+12. **Self-link skip is an intentional, pedagogical property.** A note never suggests a
+    link to itself (`target === activeFile`). While writing the `Database` note you're
+    only ever nudged toward the *other* concepts it's built from — pushing toward atomic,
+    outward-defined notes. Those outward links then feed `resolvedLinks` → PageRank, so
+    the self-link skip and the authority signal reinforce each other. Keep it.
+
 ---
 
 ## 2. The scoring model
@@ -434,6 +440,21 @@ provenance, and build out the full settings UI.
   per-target *structural*; immediate vs slow; sees case/span nuance and rejections the
   graph can't. They couple (accept → link → PageRank), so **damp** the acceptance
   contribution (cap + decay) to avoid a runaway feedback loop.
+
+### 7a-bis. Learned aliases (positive map, sourced from real links)
+The positive mirror of the reject list, stored **plugin-local** (`data.json`), **never**
+in note frontmatter — keeping link-suggestion separate from note-metadata editing.
+- **Source: observe the links the user already makes.** On `metadataCache` "changed",
+  inspect the file's links; when a link's display text differs from the target's
+  basename/aliases (e.g. `[[valuable|value]]`), record `value → valuable.md`. Accepting an
+  auto-suggestion produces the same `[[target|surface]]` shape, so manual links and
+  accepted suggestions feed one store. Skip when the surface form is already derivable
+  from the title/aliases (`[[Database]]` teaches nothing).
+- **Effect: index-level, not just a boost.** A learned surface form is injected as a
+  lookup edge to its target (exactly like a frontmatter alias), so it *creates* a
+  candidate that scoring alone never could — this is what lets `value` reach `valuable`
+  despite the stem mismatch (`valu` ≠ `valuabl`), with **no algorithm/stemmer change**.
+- Settings: a small browser to view/remove learned aliases, mirroring the reject browser.
 
 ### 7b. Fusion + provenance
 - Confirm weighted-sum fusion (or switch to **Reciprocal Rank Fusion** if tuning is hard).
