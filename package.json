@@ -1,6 +1,6 @@
 {
   "name": "auto-linker",
-  "version": "1.4.3",
+  "version": "1.4.4",
   "description": "Obsidian plugin: semantic auto-linking with wiki-link insertion",
   "main": "main.js",
   "scripts": {

@@ -40,7 +40,8 @@ export interface ScoredSuggestion extends Suggestion {
 
 /** Scoring weights + default Sensitivity value.  Exported so settings can "Restore defaults". */
 export const SCORING = {
-  weights: { lex: 0.35, sig: 0.20, case: 0.10, graph: 0.10, sem: 0.15, accept: 0.10 },
+  // Semantics is deliberately a low-weight refiner, not a driver.
+  weights: { lex: 0.40, sig: 0.25, case: 0.15, graph: 0.10, sem: 0.05, accept: 0.05 },
   /** Default Sensitivity slider position (0–100). */
   threshold: 55,
 };
@@ -52,10 +53,11 @@ const BASE_MATCH_FACTOR = 0.85;
 const EXACT_TOKEN_BONUS = 0.25;
 /** Confidence bonus when two adjacent anchors corroborate the same target (merge). */
 const MERGE_BONUS = 0.1;
-/** Fuzzy (typo) matching: minimum token length to attempt, and the length below
- *  which only a single edit is tolerated.  Short tokens stay exact-only to avoid noise. */
-const FUZZY_MIN_LEN   = 4;
-const FUZZY_SHORT_LEN = 5;
+/** Fuzzy (typo) matching budget. Tokens must be ≥ FUZZY_MIN_LEN to fuzzy-match at
+ *  all; 2 edits are allowed only for long (≥ FUZZY_FAR_LEN) tokens, else 1. Kept
+ *  tight so "renorm"≉"record" and "note"≉"not" don't slip through. */
+const FUZZY_MIN_LEN = 5;
+const FUZZY_FAR_LEN = 8;
 
 function computeThreshold01(sensitivity: number): number {
   // sensitivity 0 → strict (0.75), 100 → loose (0.30), default 55 ≈ 0.50
@@ -315,6 +317,8 @@ export class TitleIndex {
 
 const LINK_PATTERN = /\[\[([^\]]+)\]\]/g;
 const TAG_PATTERN  = /#\w+/g;
+// Fenced code block: ``` to the next ``` (or end-of-text). Checked before inline.
+const FENCE_PATTERN = /```[\s\S]*?(?:```|$)/g;
 // Inline code: a backtick to the next backtick, end-of-line, or end-of-text.
 const BACKTICK_PATTERN = /`[^`\n]*(`|$)/gm;
 
@@ -340,6 +344,11 @@ export function scoreRegion(
   // Skip ranges: existing [[links]] and #tags (offsets are local to `text`)
   const skipRanges: Array<[number, number]> = [];
   let m: RegExpExecArray | null;
+  FENCE_PATTERN.lastIndex = 0;
+  while ((m = FENCE_PATTERN.exec(text)) !== null) {
+    skipRanges.push([m.index, m.index + m[0].length]);
+    if (m[0].length === 0) FENCE_PATTERN.lastIndex++;
+  }
   LINK_PATTERN.lastIndex = 0;
   while ((m = LINK_PATTERN.exec(text)) !== null) skipRanges.push([m.index, m.index + m[0].length]);
   TAG_PATTERN.lastIndex = 0;
@@ -429,8 +438,11 @@ export function scoreRegion(
         // below an exact hit; short tokens stay exact-only to avoid noise.
         const qStem = stems[i];
         if (qStem.length >= FUZZY_MIN_LEN) {
-          const maxDist = qStem.length <= FUZZY_SHORT_LEN ? 1 : 2;
+          const maxDist = qStem.length >= FUZZY_FAR_LEN ? 2 : 1;
           for (const { key, dist } of index.fuzzyMatch(qStem, maxDist)) {
+            // Never fuzz into a common function word ("not", "and", "or", …):
+            // an approximate match to a stop-word is virtually always spurious.
+            if (commonness(key, lang) > 0.5) continue;
             const fuzzyEdges = index.getEdges(key);
             if (!fuzzyEdges) continue;
             for (const e of fuzzyEdges) {
