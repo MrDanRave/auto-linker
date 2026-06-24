@@ -58,6 +58,8 @@ const MERGE_BONUS = 0.1;
  *  tight so "renorm"≉"record" and "note"≉"not" don't slip through. */
 const FUZZY_MIN_LEN = 5;
 const FUZZY_FAR_LEN = 8;
+/** Accept count at which the acceptance signal saturates toward 1.0. */
+const ACCEPT_SATURATE = 3;
 
 function computeThreshold01(sensitivity: number): number {
   // sensitivity 0 → strict (0.75), 100 → loose (0.30), default 55 ≈ 0.50
@@ -75,8 +77,17 @@ interface RejectEntry {
   notePath: string | null;
 }
 
+interface LearnedAlias {
+  surface: string;     // display text the user linked with (e.g. "value")
+  targetPath: string;  // note it pointed to (e.g. "Valuable.md")
+}
+
 interface PersistedState {
   rejectList: RejectEntry[];
+  /** Positive map: surface forms the user has linked → target (the #1 feature). */
+  learnedAliases?: LearnedAlias[];
+  /** Per (stemmed-span → target) accept counts; seeds the acceptance signal. */
+  acceptance?: Record<string, number>;
 }
 
 interface StagedReject {
@@ -269,6 +280,10 @@ export class TitleIndex {
     return s || 1;
   }
 
+  /** Learned aliases (path → surface forms) injected like frontmatter aliases. */
+  private learnedAliases?: Map<string, Set<string>>;
+  setLearnedAliases(map: Map<string, Set<string>>) { this.learnedAliases = map; }
+
   // ── Build / maintenance ─────────────────────────────────────────────────────
 
   build() {
@@ -292,6 +307,8 @@ export class TitleIndex {
         if (typeof alias === "string") { this.index.set(alias.toLowerCase(), file.path); names.push(alias); }
       }
     }
+    const learned = this.learnedAliases?.get(file.path);
+    if (learned) for (const surface of learned) { this.index.set(surface.toLowerCase(), file.path); names.push(surface); }
     const units: Unit[] = [];
     for (const name of names) units.push(...this.nameToUnits(file.path, name));
     this.addUnits(file.path, units);
@@ -336,7 +353,9 @@ export function scoreRegion(
   graphScorer?: GraphScorer,
   buckets: BucketConfig = DEFAULT_BUCKETS,
   /** Re-rank hook: semScore in [0,1] for (span→target), or null when not yet available. */
-  semScore?: (from: number, to: number, targetPath: string) => number | null
+  semScore?: (from: number, to: number, targetPath: string) => number | null,
+  /** Learned-preference hook: acceptance in [0,1] for (stemmed-span→target), or null. */
+  acceptScore?: (stemKey: string, targetPath: string) => number | null
 ): ScoredSuggestion[] {
   const threshold = computeThreshold01(sensitivity);
   const rejectSet = new Set(rejectList.map((r) => rejectKey(r.span, r.targetPath, r.notePath)));
@@ -390,7 +409,7 @@ export function scoreRegion(
     return 0.0;
   };
 
-  interface Cand { from: number; to: number; span: string; targetPath: string; lexScore: number; tokIdxs: number[]; }
+  interface Cand { from: number; to: number; span: string; targetPath: string; lexScore: number; tokIdxs: number[]; stemKey: string; }
   const cands: Cand[] = [];
 
   const maxN = Math.min(index.maxPhraseLen, atoms.length);
@@ -414,7 +433,7 @@ export function scoreRegion(
       if (fullUnits) {
         for (const unit of fullUnits) {
           if (unit.path === activeFilePath) continue;
-          cands.push({ from, to, span, targetPath: unit.path, lexScore: 1.0, tokIdxs });
+          cands.push({ from, to, span, targetPath: unit.path, lexScore: 1.0, tokIdxs, stemKey: phraseKey });
         }
       }
 
@@ -430,7 +449,7 @@ export function scoreRegion(
             const lex = e.exact
               ? coverage + (1 - coverage) * EXACT_TOKEN_BONUS
               : coverage * BASE_MATCH_FACTOR;
-            cands.push({ from, to, span, targetPath: e.unit.path, lexScore: lex, tokIdxs });
+            cands.push({ from, to, span, targetPath: e.unit.path, lexScore: lex, tokIdxs, stemKey: phraseKey });
           }
         }
 
@@ -450,7 +469,7 @@ export function scoreRegion(
               if (e.unit.path === activeFilePath) continue;
               const coverage = Math.min(1, index.idfWeight(e.token) / index.unitIdfSum(e.unit));
               const fuzzyFactor = 1 - dist / Math.max(qStem.length, e.token.length);
-              cands.push({ from, to, span, targetPath: e.unit.path, lexScore: coverage * fuzzyFactor, tokIdxs });
+              cands.push({ from, to, span, targetPath: e.unit.path, lexScore: coverage * fuzzyFactor, tokIdxs, stemKey: phraseKey });
             }
           }
         }
@@ -476,6 +495,10 @@ export function scoreRegion(
     if (semScore) {
       const sv = semScore(c.from, c.to, c.targetPath);
       if (sv != null) { wsum += W.sem; num += W.sem * sv; }
+    }
+    if (acceptScore) {
+      const av = acceptScore(c.stemKey, c.targetPath);
+      if (av != null) { wsum += W.accept; num += W.accept * av; }
     }
     const confidence = num / wsum;
     if (confidence < threshold) continue;
@@ -544,6 +567,11 @@ export class AutoLinker {
   private rejectList: RejectEntry[] = [];
   private readonly DATA_KEY = "autoLinker";
 
+  // Learning tier (Phase 7)
+  private learnedAliases = new Map<string, Set<string>>();  // targetPath → surface forms
+  private acceptCounts   = new Map<string, number>();        // `${stemKey}|||${path}` → count
+  private persistCb?: () => void;
+
   private buckets: BucketConfig;
 
   // Semantic tier (Phase 6) — off unless configured with a ready embedder.
@@ -558,8 +586,15 @@ export class AutoLinker {
     this.buckets     = buckets;
     this.titleIndex  = new TitleIndex(app);
     this.titleIndex.setBuckets(buckets);
+    this.titleIndex.setLearnedAliases(this.learnedAliases);
     this.graphScorer = new GraphScorer(app);
   }
+
+  /** Persistence callback (set from main) — flushes data.json after learning. */
+  setPersist(cb: () => void) { this.persistCb = cb; }
+
+  /** Active-editor rescan callback (set from main); used after learning a new alias. */
+  setRescan(cb: () => void) { this.rescanCb = cb; }
 
   /** Where note vectors persist (set from main with the plugin dir). */
   setEmbeddingsPath(path: string) { this.embeddingsPath = path; }
@@ -620,6 +655,15 @@ export class AutoLinker {
       targetPath: r.targetPath,
       notePath: r.notePath ?? null,
     }));
+
+    this.learnedAliases.clear();
+    for (const a of saved?.learnedAliases ?? []) {
+      let set = this.learnedAliases.get(a.targetPath);
+      if (!set) { set = new Set(); this.learnedAliases.set(a.targetPath, set); }
+      set.add(a.surface);
+    }
+    this.acceptCounts.clear();
+    for (const [k, v] of Object.entries(saved?.acceptance ?? {})) this.acceptCounts.set(k, v);
   }
 
   buildWhenReady() {
@@ -640,18 +684,27 @@ export class AutoLinker {
     saveData: (d: unknown) => Promise<void>
   ) {
     const existing = ((await loadData()) ?? {}) as Record<string, unknown>;
-    existing[this.DATA_KEY] = { rejectList: this.rejectList } satisfies PersistedState;
+    const learnedAliases: LearnedAlias[] = [];
+    for (const [targetPath, surfaces] of this.learnedAliases)
+      for (const surface of surfaces) learnedAliases.push({ surface, targetPath });
+    existing[this.DATA_KEY] = {
+      rejectList: this.rejectList,
+      learnedAliases,
+      acceptance: Object.fromEntries(this.acceptCounts),
+    } satisfies PersistedState;
     await saveData(existing);
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   registerMetadataEvents(registerEvent: (e: any) => void) {
-    registerEvent(this.app.metadataCache.on("changed", (file) => {
+    registerEvent(this.app.metadataCache.on("changed", (file, _data, cache) => {
       // remove-then-add so renamed/removed aliases don't linger
       this.titleIndex.removeFile(file);
       this.titleIndex.addFile(file);
       // Links in this file may have changed → debounce a graph rebuild
       this.graphScorer.scheduleRebuild();
+      // #1: learn surface→target aliases from the user's own links.
+      this.observeLinks(file, cache);
     }));
     registerEvent(this.app.metadataCache.on("deleted", (file) => this.titleIndex.removeFile(file)));
     registerEvent(this.app.vault.on("rename", (file, oldPath) => {
@@ -663,11 +716,68 @@ export class AutoLinker {
     const sem = this.semHook(text);
     const result = scoreRegion(
       text, regionFrom, activeFilePath, this.titleIndex, this.rejectList,
-      sensitivity, this.graphScorer, this.buckets, sem
+      sensitivity, this.graphScorer, this.buckets, sem, this.acceptHook()
     );
     // Refine asynchronously: embed the candidates' sentences/targets, then rescan.
     if (sem) void this.warmAndRescan(text, regionFrom, result);
     return result;
+  }
+
+  // ── Learning tier (Phase 7) ─────────────────────────────────────────────────
+
+  /** Stemmed key for a span, matching how scoreRegion keys candidates. */
+  private spanStemKey(span: string): string {
+    const lang = detectLang(span);
+    return tokenizeAtoms(span, this.buckets).map((a) => stem(a.lower, lang)).join(" ");
+  }
+
+  /** Acceptance hook: positive signal for (stemmed-span → target) pairs with history. */
+  private acceptHook(): ((stemKey: string, targetPath: string) => number | null) | undefined {
+    if (this.acceptCounts.size === 0) return undefined;
+    return (stemKey, targetPath) => {
+      const c = this.acceptCounts.get(`${stemKey}|||${targetPath}`);
+      return c ? Math.min(1, 0.6 + 0.4 * Math.min(1, c / ACCEPT_SATURATE)) : null;
+    };
+  }
+
+  /** Record an accepted suggestion (✓) as positive evidence for future ranking. */
+  recordAccept(span: string, targetPath: string) {
+    const key = `${this.spanStemKey(span)}|||${targetPath}`;
+    this.acceptCounts.set(key, (this.acceptCounts.get(key) ?? 0) + 1);
+    this.persistCb?.();
+  }
+
+  /** Record a learned alias surface→target (from observed links). Returns true if new. */
+  private recordLearnedAlias(surface: string, targetPath: string): boolean {
+    let set = this.learnedAliases.get(targetPath);
+    if (set?.has(surface)) return false;
+    if (!set) { set = new Set(); this.learnedAliases.set(targetPath, set); }
+    set.add(surface);
+    // Re-index just this note so the new surface becomes matchable immediately.
+    const file = this.app.vault.getAbstractFileByPath(targetPath);
+    if (file instanceof TFile) { this.titleIndex.removeFile(file); this.titleIndex.addFile(file); }
+    return true;
+  }
+
+  /** #1: learn surface→target from links the user wrote, e.g. [[Valuable|value]]. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private observeLinks(file: TFile, cache: any) {
+    const links = cache?.links;
+    if (!Array.isArray(links)) return;
+    let changed = false;
+    for (const l of links) {
+      const display: string | undefined = l?.displayText;
+      const linkpath: string | undefined = l?.link;
+      if (!display || !linkpath) continue;
+      // Resolve the link target; skip headings/blocks and self-references.
+      const dest = this.app.metadataCache.getFirstLinkpathDest(linkpath.split(/[#^|]/)[0], file.path);
+      if (!(dest instanceof TFile) || dest.path === file.path) continue;
+      const surface = display.trim();
+      if (!surface || surface.toLowerCase() === dest.basename.toLowerCase()) continue; // nothing new
+      if (this.titleIndex.getPath(surface.toLowerCase()) === dest.path) continue;       // already matchable
+      if (this.recordLearnedAlias(surface, dest.path)) changed = true;
+    }
+    if (changed) { this.persistCb?.(); this.rescanCb?.(); }
   }
 
   /** Sync semScore hook reading only cached vectors (never blocks); null = not warm. */
@@ -971,6 +1081,9 @@ export function buildAutoLinkerExtensions(
         changes: { from: meta.from, to: meta.to, insert: replacement },
         effects: [removeDecoEffect.of({ id: meta.id })],
       });
+      // Learn: this (span → target) was wanted. Boosts future ranking.
+      linker.recordAccept(data.span, data.targetPath);
+      persistFn();
     },
 
     onReject: (meta: DecorationMeta) => {

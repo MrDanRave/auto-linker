@@ -447,6 +447,18 @@ network traffic (verify in devtools).
 
 ## PHASE 7 — Acceptance learning + hybrid fusion + persistence + settings polish
 
+> **Status (v1.5.0): the learning core is shipped & unit-verified.**
+> - **Learned aliases (#1):** `observeLinks` watches `metadataCache "changed"` and records
+>   `[[Target|surface]]` display text whose surface isn't already derivable → injected into
+>   `TitleIndex` as alias edges (so `value`→`Valuable` works with no stemmer change).
+>   Persisted in `data.json` (`learnedAliases`).
+> - **Acceptance signal:** `recordAccept` (on ✓) counts `(stemmed-span → target)`; folded into
+>   confidence as `W.accept` only for pairs with history (renormalized out otherwise),
+>   saturating via `ACCEPT_SATURATE`. Persisted (`acceptance`). Survives save/load.
+> **Remaining:** `matchType: 'literal' | 'semantic'` provenance + `RejectEntry` migration;
+> the six weight-slider settings UI + Restore-defaults; reject-browser literal/semantic
+> grouping; the "Index vault for semantics" button. Time-decay on acceptance is deferred.
+
 **Goal:** add the **learned preference** signal, finalize fusion, thread match
 provenance, and build out the full settings UI.
 

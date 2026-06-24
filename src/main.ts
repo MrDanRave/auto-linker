@@ -45,6 +45,8 @@ export default class AutoLinkerPlugin extends Plugin {
 
       const persistFn    = () => linker.save(() => this.loadData(), (d) => this.saveData(d));
       const rescanActive = () => this.rescanActiveEditor();
+      linker.setPersist(persistFn);
+      linker.setRescan(rescanActive);
 
       const panel = new RejectStagingPanel(this.app, linker, persistFn, rescanActive);
       this.stagingPanel = panel;
