@@ -5,6 +5,7 @@ import {
   BucketConfig, DEFAULT_BUCKETS, tokenizeAtoms, splitUnits, extractBase, editDistance,
 } from "./nlp";
 import { GraphScorer } from "./graph";
+import { SemanticIndex, TransformersEmbedder, DEFAULT_MODEL, sentenceAround } from "./embeddings";
 import {
   addDecoEffect,
   removeDecoEffect,
@@ -329,7 +330,9 @@ export function scoreRegion(
   rejectList: RejectEntry[],
   sensitivity: number,
   graphScorer?: GraphScorer,
-  buckets: BucketConfig = DEFAULT_BUCKETS
+  buckets: BucketConfig = DEFAULT_BUCKETS,
+  /** Re-rank hook: semScore in [0,1] for (span→target), or null when not yet available. */
+  semScore?: (from: number, to: number, targetPath: string) => number | null
 ): ScoredSuggestion[] {
   const threshold = computeThreshold01(sensitivity);
   const rejectSet = new Set(rejectList.map((r) => rejectKey(r.span, r.targetPath, r.notePath)));
@@ -353,13 +356,7 @@ export function scoreRegion(
   if (!atoms.length) return [];
   const stems = atoms.map((a) => stem(a.lower, lang));
 
-  // Weight renormalization over *available* signals (graph when present; sem/accept later).
-  const W       = SCORING.weights;
-  const activeW = W.lex + W.sig + W.case + (graphScorer ? W.graph : 0);
-  const wLex    = W.lex  / activeW;
-  const wSig    = W.sig  / activeW;
-  const wCase   = W.case / activeW;
-  const wGraph  = graphScorer ? W.graph / activeW : 0;
+  const W = SCORING.weights;
 
   // significance(span tokens): least-common (most distinctive) token drives the score.
   const significanceOf = (tokIdxs: number[]): number =>
@@ -456,10 +453,19 @@ export function scoreRegion(
     const blockedNote  = rejectSet.has(rejectKey(c.span, c.targetPath, activeFilePath));
     if (blockedVault || blockedNote) continue;
 
-    const sig  = significanceOf(c.tokIdxs);
-    const cse  = caseOf(c.from, c.to, c.tokIdxs);
-    const grph = graphScorer ? graphScorer.getScore(c.targetPath) : 0;
-    const confidence = wLex * c.lexScore + wSig * sig + wCase * cse + wGraph * grph;
+    const sig = significanceOf(c.tokIdxs);
+    const cse = caseOf(c.from, c.to, c.tokIdxs);
+
+    // Confidence = weighted sum renormalized over the signals available for THIS
+    // candidate (graph when a scorer exists; sem only when its vectors are cached).
+    let wsum = W.lex + W.sig + W.case;
+    let num  = W.lex * c.lexScore + W.sig * sig + W.case * cse;
+    if (graphScorer) { wsum += W.graph; num += W.graph * graphScorer.getScore(c.targetPath); }
+    if (semScore) {
+      const sv = semScore(c.from, c.to, c.targetPath);
+      if (sv != null) { wsum += W.sem; num += W.sem * sv; }
+    }
+    const confidence = num / wsum;
     if (confidence < threshold) continue;
 
     scored.push({
@@ -528,12 +534,33 @@ export class AutoLinker {
 
   private buckets: BucketConfig;
 
+  // Semantic tier (Phase 6) — off unless configured with a ready embedder.
+  private semantic?: SemanticIndex;
+  private embedder?: TransformersEmbedder;
+  private enableSemantic = false;
+  private rescanCb?: () => void;
+
   constructor(private app: App, buckets: BucketConfig = DEFAULT_BUCKETS) {
     this.buckets     = buckets;
     this.titleIndex  = new TitleIndex(app);
     this.titleIndex.setBuckets(buckets);
     this.graphScorer = new GraphScorer(app);
   }
+
+  /** Enable/disable the semantic re-rank tier. Loads the model lazily on enable.
+   *  Returns the resulting backend status ("ready" | "error" | "off"). */
+  async configureSemantic(enable: boolean, modelPath: string, rescanCb: () => void): Promise<string> {
+    this.enableSemantic = enable;
+    this.rescanCb = rescanCb;
+    if (!enable) { this.semantic = undefined; this.embedder = undefined; return "off"; }
+    this.embedder = new TransformersEmbedder(DEFAULT_MODEL, modelPath);
+    this.semantic = new SemanticIndex(this.embedder);
+    const ok = await this.embedder.init();
+    if (ok) rescanCb();            // re-score now that the model can refine
+    return this.embedder.getStatus();
+  }
+
+  semanticStatus(): string { return this.embedder?.getStatus() ?? "off"; }
 
   /** Update tokenizer buckets (from settings) and rebuild the index. */
   setBuckets(buckets: BucketConfig) {
@@ -591,7 +618,51 @@ export class AutoLinker {
   }
 
   scan(text: string, regionFrom: number, activeFilePath: string, sensitivity = SCORING.threshold): ScoredSuggestion[] {
-    return scoreRegion(text, regionFrom, activeFilePath, this.titleIndex, this.rejectList, sensitivity, this.graphScorer, this.buckets);
+    const sem = this.semHook(text);
+    const result = scoreRegion(
+      text, regionFrom, activeFilePath, this.titleIndex, this.rejectList,
+      sensitivity, this.graphScorer, this.buckets, sem
+    );
+    // Refine asynchronously: embed the candidates' sentences/targets, then rescan.
+    if (sem) void this.warmAndRescan(text, regionFrom, result);
+    return result;
+  }
+
+  /** Sync semScore hook reading only cached vectors (never blocks); null = not warm. */
+  private semHook(text: string): ((from: number, to: number, targetPath: string) => number | null) | undefined {
+    const si = this.semantic;
+    if (!this.enableSemantic || !si || !si.isReady()) return undefined;
+    return (from, to, targetPath) => {
+      const file = this.app.vault.getAbstractFileByPath(targetPath);
+      if (!(file instanceof TFile)) return null;
+      return si.semScoreSync(sentenceAround(text, from, to), targetPath, file.stat.mtime);
+    };
+  }
+
+  private async warmAndRescan(text: string, regionFrom: number, suggestions: ScoredSuggestion[]) {
+    const si = this.semantic;
+    if (!si || !si.isReady()) return;
+    let changed = false;
+    const seenNotes = new Set<string>();
+    for (const s of suggestions) {
+      const sentence = sentenceAround(text, s.from - regionFrom, s.to - regionFrom);
+      if (await si.warmSentence(sentence)) changed = true;
+      if (!seenNotes.has(s.targetPath)) {
+        seenNotes.add(s.targetPath);
+        const file = this.app.vault.getAbstractFileByPath(s.targetPath);
+        if (file instanceof TFile) {
+          const body = await this.noteEmbedText(file);
+          if (await si.warmNote(s.targetPath, file.stat.mtime, body)) changed = true;
+        }
+      }
+    }
+    if (changed && this.rescanCb) this.rescanCb();
+  }
+
+  /** Text embedded for a note's vector: title + first ~200 words. */
+  private async noteEmbedText(file: TFile): Promise<string> {
+    const content = await this.app.vault.cachedRead(file);
+    return `${file.basename}\n${content.split(/\s+/).slice(0, 200).join(" ")}`;
   }
 
   destroy() {

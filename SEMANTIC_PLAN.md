@@ -394,6 +394,21 @@ still match (the reason we dropped mid-word matching).
 
 ## PHASE 6 — Local embeddings, semantic RE-RANK (was v1 Phase 4)
 
+> **Status (v1.4.0): architecture shipped & unit-verified; model backend pending
+> real-vault verification.** Built + tested (with a fake embedder): `embeddings.ts`
+> (`cosine`, `toSemScore`, `SemanticIndex` note/sentence vector caches w/ mtime
+> invalidation, `sentenceAround`), the `Embedder` interface, the **per-candidate weight
+> renormalization** folding `sem` in only when its vectors are cached (sem=null ⇒ exact
+> Phase 5 behavior; sem=1 boosts; sem=0 can demote below threshold), the async
+> warm-then-rescan flow, settings (toggle + soft-block modal + `semanticModelPath`).
+> `@xenova/transformers` is **bundled** (main.js ≈ 1.6 MB; the heavy ONNX/wasm runtime
+> still loads at runtime, not into the JS) and initialized **lazily on enable** via
+> dynamic import with graceful fallback. **Not yet verified in this sandbox** (no
+> network/model/inference): the one-time model **and** ONNX-wasm download (wasm is
+> fetched from a CDN on first use — carries no user data), real inference, and
+> `embeddings.json` persistence (vectors are session-only for now). Needs in-Obsidian
+> testing.
+
 **Goal:** use contextual meaning to validate/re-rank the lexical candidates from Phases
 4–5 (retrieve-then-rerank). Off by default; degrade gracefully when absent.
 

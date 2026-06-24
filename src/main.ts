@@ -1,4 +1,4 @@
-import { Plugin, TFile } from "obsidian";
+import { Plugin, TFile, Notice } from "obsidian";
 import { DEFAULT_SETTINGS, AutoLinkerSettings, AutoLinkerSettingTab } from "./settings";
 import {
   AutoLinker,
@@ -39,6 +39,9 @@ export default class AutoLinkerPlugin extends Plugin {
       linker.buildWhenReady();
       linker.registerMetadataEvents((e) => this.registerEvent(e));
 
+      // Configure the semantic tier if the user has it enabled (lazy model load).
+      if (this.settings.enableSemantic) void this.applySemantic();
+
       const persistFn    = () => linker.save(() => this.loadData(), (d) => this.saveData(d));
       const rescanActive = () => this.rescanActiveEditor();
 
@@ -75,6 +78,24 @@ export default class AutoLinkerPlugin extends Plugin {
   applyTokenizer() {
     if (!this.autoLinker) return;
     this.autoLinker.setBuckets(this.settings.tokenizer);
+    this.rescanActiveEditor();
+  }
+
+  /** Enable/disable the semantic tier from settings (loads the model lazily). */
+  async applySemantic() {
+    if (!this.autoLinker) return;
+    const status = await this.autoLinker.configureSemantic(
+      this.settings.enableSemantic,
+      this.settings.semanticModelPath,
+      () => this.rescanActiveEditor(),
+    );
+    if (this.settings.enableSemantic) {
+      new Notice(
+        status === "ready"
+          ? "Auto-linker: semantic model ready."
+          : `Auto-linker: semantic model ${status} (the embedding library is not bundled yet).`,
+      );
+    }
     this.rescanActiveEditor();
   }
 

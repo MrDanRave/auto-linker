@@ -1,12 +1,17 @@
-import { App, PluginSettingTab, Setting } from "obsidian";
+import { App, Modal, PluginSettingTab, Setting } from "obsidian";
 import type AutoLinkerPlugin from "./main";
 import { BucketConfig, DEFAULT_BUCKETS } from "./features/nlp";
+import { DEFAULT_MODEL } from "./features/embeddings";
 
 export interface AutoLinkerSettings {
   enableAutoLinker: boolean;
   /** 0–100; maps to confidence threshold via lerp(0.75, 0.30, t/100).
    *  0 = strictest (threshold 0.75), 100 = loosest (threshold 0.30), default 55 ≈ 0.50 */
   sensitivity: number;
+  /** Phase 6 semantic re-rank tier — off by default (CPU + one-time model download). */
+  enableSemantic: boolean;
+  /** Optional local model path for air-gapped use; "" = download/cache the default. */
+  semanticModelPath: string;
   /** Per-vault tokenizer character buckets (intra / phrase / anchor). */
   tokenizer: BucketConfig;
 }
@@ -14,8 +19,33 @@ export interface AutoLinkerSettings {
 export const DEFAULT_SETTINGS: AutoLinkerSettings = {
   enableAutoLinker: true,
   sensitivity: 55,
+  enableSemantic: false,
+  semanticModelPath: "",
   tokenizer: { ...DEFAULT_BUCKETS },
 };
+
+/** Soft-block shown before the first semantic-model download. */
+class SemanticEnableModal extends Modal {
+  constructor(app: App, private onConfirm: () => void, private onCancel: () => void) {
+    super(app);
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.createEl("h3", { text: "Enable semantic linking?" });
+    contentEl.createEl("p", {
+      text:
+        "Semantic linking uses a small on-device embedding model to rank suggestions " +
+        "by meaning. The model (" + DEFAULT_MODEL + ", ~50 MB) is downloaded once, then " +
+        "stored locally and used fully offline — no note content ever leaves your device.",
+    });
+    const row = contentEl.createEl("div", { cls: "modal-button-container" });
+    const cancel = row.createEl("button", { text: "Cancel" });
+    const ok = row.createEl("button", { text: "Download & enable", cls: "mod-cta" });
+    cancel.addEventListener("click", () => { this.onCancel(); this.close(); });
+    ok.addEventListener("click", () => { this.onConfirm(); this.close(); });
+  }
+  onClose() { this.contentEl.empty(); }
+}
 
 interface RejectRow {
   span: string;
@@ -115,6 +145,49 @@ export class AutoLinkerSettingTab extends PluginSettingTab {
           this.display();
         }),
     );
+
+    // ── Semantic re-rank (Phase 6) ────────────────────────────────────────
+    new Setting(containerEl).setName("Semantic meaning").setHeading();
+    new Setting(containerEl)
+      .setName("Enable semantic linking")
+      .setDesc("Re-rank suggestions by meaning using a local embedding model. Off by default.")
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.enableSemantic)
+          .onChange(async (value) => {
+            if (value && !this.plugin.settings.enableSemantic) {
+              // First enable → soft-block confirmation before any download.
+              new SemanticEnableModal(
+                this.app,
+                async () => {
+                  this.plugin.settings.enableSemantic = true;
+                  await this.plugin.saveSettings();
+                  await this.plugin.applySemantic();
+                  this.display();
+                },
+                () => { toggle.setValue(false); },   // revert
+              ).open();
+            } else {
+              this.plugin.settings.enableSemantic = value;
+              await this.plugin.saveSettings();
+              await this.plugin.applySemantic();
+              this.display();
+            }
+          }),
+      );
+
+    new Setting(containerEl)
+      .setName("Local model path")
+      .setDesc("Optional. Point at your own local model.")
+      .addText((txt) =>
+        txt
+          .setValue(this.plugin.settings.semanticModelPath)
+          .setPlaceholder("(download default)")
+          .onChange(async (value) => {
+            this.plugin.settings.semanticModelPath = value;
+            await this.plugin.saveSettings();
+          }),
+      );
 
     // ── Rejected suggestions browser ─────────────────────────────────────
     const linker = this.plugin.autoLinker;
