@@ -70,6 +70,14 @@ export class TransformersEmbedder implements Embedder {
       // Bundled (see esbuild config); imported lazily so init cost is paid only on enable.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const tf: any = await import("@xenova/transformers");
+      // Use the wasm runtime, single-threaded (Electron renderer has no
+      // cross-origin isolation for multithreaded SharedArrayBuffer wasm), and
+      // load the wasm binaries from the matching CDN build.
+      if (tf.env?.backends?.onnx?.wasm) {
+        tf.env.backends.onnx.wasm.numThreads = 1;
+        tf.env.backends.onnx.wasm.wasmPaths =
+          "https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2/dist/";
+      }
       if (this.localModelPath) {
         tf.env.allowRemoteModels = false;
         tf.env.localModelPath = this.localModelPath;
