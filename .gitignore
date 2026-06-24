@@ -6,5 +6,8 @@ main.js
 # Vault-specific plugin data (reject list, settings); never commit
 data.json
 
+# Semantic note-vector cache — derived from note content; never commit
+embeddings.json
+
 # Dev source maps
 *.map

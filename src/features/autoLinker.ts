@@ -539,6 +539,8 @@ export class AutoLinker {
   private embedder?: TransformersEmbedder;
   private enableSemantic = false;
   private rescanCb?: () => void;
+  private embeddingsPath?: string;
+  private embSaveTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private app: App, buckets: BucketConfig = DEFAULT_BUCKETS) {
     this.buckets     = buckets;
@@ -546,6 +548,9 @@ export class AutoLinker {
     this.titleIndex.setBuckets(buckets);
     this.graphScorer = new GraphScorer(app);
   }
+
+  /** Where note vectors persist (set from main with the plugin dir). */
+  setEmbeddingsPath(path: string) { this.embeddingsPath = path; }
 
   /** Enable/disable the semantic re-rank tier. Loads the model lazily on enable.
    *  Returns the resulting backend status ("ready" | "error" | "off"). */
@@ -556,11 +561,36 @@ export class AutoLinker {
     this.embedder = new TransformersEmbedder(DEFAULT_MODEL, modelPath);
     this.semantic = new SemanticIndex(this.embedder);
     const ok = await this.embedder.init();
-    if (ok) rescanCb();            // re-score now that the model can refine
+    if (ok) {
+      await this.loadEmbeddings();   // reuse vectors from previous sessions
+      rescanCb();                    // re-score now that the model can refine
+    }
     return this.embedder.getStatus();
   }
 
   semanticStatus(): string { return this.embedder?.getStatus() ?? "off"; }
+  semanticError(): string { return this.embedder?.getError() ?? ""; }
+
+  private async loadEmbeddings() {
+    if (!this.embeddingsPath || !this.semantic) return;
+    try {
+      const adapter = this.app.vault.adapter;
+      if (await adapter.exists(this.embeddingsPath)) {
+        this.semantic.load(JSON.parse(await adapter.read(this.embeddingsPath)));
+      }
+    } catch { /* corrupt/missing cache → start fresh */ }
+  }
+
+  private scheduleSaveEmbeddings() {
+    if (!this.embeddingsPath || !this.semantic) return;
+    if (this.embSaveTimer) clearTimeout(this.embSaveTimer);
+    this.embSaveTimer = setTimeout(() => {
+      this.embSaveTimer = null;
+      const si = this.semantic;
+      if (!this.embeddingsPath || !si) return;
+      void this.app.vault.adapter.write(this.embeddingsPath, JSON.stringify(si.serialize()));
+    }, 3000);
+  }
 
   /** Update tokenizer buckets (from settings) and rebuild the index. */
   setBuckets(buckets: BucketConfig) {
@@ -656,7 +686,10 @@ export class AutoLinker {
         }
       }
     }
-    if (changed && this.rescanCb) this.rescanCb();
+    if (changed) {
+      this.scheduleSaveEmbeddings();
+      if (this.rescanCb) this.rescanCb();
+    }
   }
 
   /** Text embedded for a note's vector: title + first ~200 words. */
@@ -667,6 +700,7 @@ export class AutoLinker {
 
   destroy() {
     this.graphScorer.destroy();
+    if (this.embSaveTimer) clearTimeout(this.embSaveTimer);
   }
 
   // ── Reject lifecycle ──────────────────────────────────────────────────────

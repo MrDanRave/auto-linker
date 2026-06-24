@@ -38,6 +38,7 @@ export default class AutoLinkerPlugin extends Plugin {
       await linker.load(() => this.loadData());
       linker.buildWhenReady();
       linker.registerMetadataEvents((e) => this.registerEvent(e));
+      linker.setEmbeddingsPath(`${this.manifest.dir}/embeddings.json`);
 
       // Configure the semantic tier if the user has it enabled (lazy model load).
       if (this.settings.enableSemantic) void this.applySemantic();
@@ -90,11 +91,12 @@ export default class AutoLinkerPlugin extends Plugin {
       () => this.rescanActiveEditor(),
     );
     if (this.settings.enableSemantic) {
-      new Notice(
-        status === "ready"
-          ? "Auto-linker: semantic model ready."
-          : `Auto-linker: semantic model ${status} (the embedding library is not bundled yet).`,
-      );
+      if (status === "ready") {
+        new Notice("Auto-linker: semantic model ready.");
+      } else {
+        const err = this.autoLinker.semanticError();
+        new Notice(`Auto-linker: semantic model ${status}.${err ? " " + err : ""} (see console)`);
+      }
     }
     this.rescanActiveEditor();
   }

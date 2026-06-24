@@ -52,6 +52,7 @@ export interface Embedder {
 export class TransformersEmbedder implements Embedder {
   private pipe: ((t: string, o: unknown) => Promise<{ data: Float32Array }>) | null = null;
   private status: "off" | "loading" | "ready" | "error" = "off";
+  private lastError = "";
 
   constructor(
     private model = DEFAULT_MODEL,
@@ -60,27 +61,31 @@ export class TransformersEmbedder implements Embedder {
 
   isReady(): boolean { return this.status === "ready"; }
   getStatus(): string { return this.status; }
+  getError(): string { return this.lastError; }
 
   async init(): Promise<boolean> {
     if (this.status === "ready") return true;
     this.status = "loading";
     try {
-      // Dynamic + external (see esbuild config): kept out of the main bundle.
-      // Optional peer module — not installed at build time, resolved at runtime.
+      // Bundled (see esbuild config); imported lazily so init cost is paid only on enable.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      // @ts-ignore — module is intentionally external/optional
       const tf: any = await import("@xenova/transformers");
       if (this.localModelPath) {
         tf.env.allowRemoteModels = false;
         tf.env.localModelPath = this.localModelPath;
+      } else {
+        tf.env.allowRemoteModels = true;   // fetch + cache the default model once
       }
       this.pipe = await tf.pipeline("feature-extraction", this.model);
       this.status = "ready";
+      this.lastError = "";
       return true;
-    } catch {
-      // Not installed / no network / load failed → tier stays off, plugin works.
+    } catch (e) {
+      // Load failed → tier stays off, plugin keeps working. Surface why.
       this.status = "error";
+      this.lastError = e instanceof Error ? e.message : String(e);
       this.pipe = null;
+      console.error("[auto-linker] semantic model failed to load:", e);
       return false;
     }
   }
