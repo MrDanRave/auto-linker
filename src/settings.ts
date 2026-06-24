@@ -2,12 +2,15 @@ import { App, Modal, PluginSettingTab, Setting } from "obsidian";
 import type AutoLinkerPlugin from "./main";
 import { BucketConfig, DEFAULT_BUCKETS } from "./features/nlp";
 import { DEFAULT_MODEL } from "./features/embeddings";
+import { ScoringWeights, SCORING } from "./features/autoLinker";
 
 export interface AutoLinkerSettings {
   enableAutoLinker: boolean;
   /** 0–100; maps to confidence threshold via lerp(0.75, 0.30, t/100).
    *  0 = strictest (threshold 0.75), 100 = loosest (threshold 0.30), default 55 ≈ 0.50 */
   sensitivity: number;
+  /** Per-signal weights (0–100 sliders; relative — the scorer renormalizes). */
+  weights: ScoringWeights;
   /** Phase 6 semantic re-rank tier — off by default (CPU + one-time model download). */
   enableSemantic: boolean;
   /** Optional local model path for air-gapped use; "" = download/cache the default. */
@@ -16,9 +19,20 @@ export interface AutoLinkerSettings {
   tokenizer: BucketConfig;
 }
 
+/** Default weights on the 0–100 slider scale (mirrors SCORING.weights ×100). */
+export const DEFAULT_WEIGHTS: ScoringWeights = {
+  lex:   Math.round(SCORING.weights.lex   * 100),
+  sig:   Math.round(SCORING.weights.sig   * 100),
+  case:  Math.round(SCORING.weights.case  * 100),
+  graph: Math.round(SCORING.weights.graph * 100),
+  sem:   Math.round(SCORING.weights.sem   * 100),
+  accept:Math.round(SCORING.weights.accept* 100),
+};
+
 export const DEFAULT_SETTINGS: AutoLinkerSettings = {
   enableAutoLinker: true,
   sensitivity: 55,
+  weights: { ...DEFAULT_WEIGHTS },
   enableSemantic: false,
   semanticModelPath: "",
   tokenizer: { ...DEFAULT_BUCKETS },
@@ -100,6 +114,44 @@ export class AutoLinkerSettingTab extends PluginSettingTab {
             this.plugin.rescanActiveEditor();
           })
       );
+
+    // ── Signal weights ────────────────────────────────────────────────────
+    new Setting(containerEl).setName("Signal weights").setHeading();
+
+    const weightSlider = (name: string, desc: string, key: keyof ScoringWeights) =>
+      new Setting(containerEl)
+        .setName(name)
+        .setDesc(desc)
+        .addSlider((slider) =>
+          slider
+            .setLimits(0, 100, 1)
+            .setValue(this.plugin.settings.weights[key])
+            .setDynamicTooltip()
+            .onChange(async (value) => {
+              this.plugin.settings.weights[key] = value;
+              await this.plugin.saveSettings();
+              this.plugin.applyWeights();
+            }),
+        );
+
+    weightSlider("Lexical match", "How closely the text matches a note title.", "lex");
+    weightSlider("Significance", "Down-weights common words (the, and, from).", "sig");
+    weightSlider("Capitalization", "Treats ALL-CAPS / Capitalized words as more link-worthy.", "case");
+    weightSlider("Note importance", "Favors well-linked notes (backlinks / PageRank).", "graph");
+    weightSlider("Semantic meaning", "Match by meaning — needs the semantic tier enabled.", "sem");
+    weightSlider("Learned preference", "Favors links you've accepted before.", "accept");
+
+    new Setting(containerEl).addButton((btn) =>
+      btn
+        .setButtonText("Restore default weights")
+        .onClick(async () => {
+          this.plugin.settings.weights = { ...DEFAULT_WEIGHTS };
+          this.plugin.settings.sensitivity = SCORING.threshold;
+          await this.plugin.saveSettings();
+          this.plugin.applyWeights();
+          this.display();
+        }),
+    );
 
     // ── Tokenizer buckets ─────────────────────────────────────────────────
     new Setting(containerEl).setName("Tokenizer").setHeading();

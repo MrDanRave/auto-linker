@@ -47,6 +47,7 @@ export default class AutoLinkerPlugin extends Plugin {
       const rescanActive = () => this.rescanActiveEditor();
       linker.setPersist(persistFn);
       linker.setRescan(rescanActive);
+      linker.setWeights(this.settings.weights);
 
       const panel = new RejectStagingPanel(this.app, linker, persistFn, rescanActive);
       this.stagingPanel = panel;
@@ -75,6 +76,13 @@ export default class AutoLinkerPlugin extends Plugin {
         })
       );
     }
+  }
+
+  /** Re-apply signal weights from settings, then rescan. */
+  applyWeights() {
+    if (!this.autoLinker) return;
+    this.autoLinker.setWeights(this.settings.weights);
+    this.rescanActiveEditor();
   }
 
   /** Re-apply tokenizer buckets from settings: rebuild index + rescan. */

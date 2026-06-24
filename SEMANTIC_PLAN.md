@@ -455,9 +455,14 @@ network traffic (verify in devtools).
 > - **Acceptance signal:** `recordAccept` (on ✓) counts `(stemmed-span → target)`; folded into
 >   confidence as `W.accept` only for pairs with history (renormalized out otherwise),
 >   saturating via `ACCEPT_SATURATE`. Persisted (`acceptance`). Survives save/load.
+> **(v1.5.1) Signal-weight controls shipped:** six 0–100 sliders (Lexical, Significance,
+> Capitalization, Note importance, Semantic, Learned preference) + "Restore default
+> weights". Weights persist in settings, thread through `AutoLinker.setWeights` →
+> `scoreRegion` (relative, renormalized — so the slider scale and the 0–1 `SCORING`
+> defaults are interchangeable), and re-scan live on change.
 > **Remaining:** `matchType: 'literal' | 'semantic'` provenance + `RejectEntry` migration;
-> the six weight-slider settings UI + Restore-defaults; reject-browser literal/semantic
-> grouping; the "Index vault for semantics" button. Time-decay on acceptance is deferred.
+> reject-browser literal/semantic grouping; the "Index vault for semantics" button.
+> Time-decay on acceptance is deferred.
 
 **Goal:** add the **learned preference** signal, finalize fusion, thread match
 provenance, and build out the full settings UI.

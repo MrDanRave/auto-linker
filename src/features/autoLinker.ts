@@ -38,8 +38,12 @@ export interface ScoredSuggestion extends Suggestion {
   matchType: "literal";
 }
 
-/** Scoring weights + default Sensitivity value.  Exported so settings can "Restore defaults". */
-export const SCORING = {
+export type ScoringWeights = { lex: number; sig: number; case: number; graph: number; sem: number; accept: number };
+
+/** Scoring weights + default Sensitivity value.  Exported so settings can "Restore defaults".
+ *  Weights are relative — the scorer renormalizes over available signals — so the slider
+ *  scale (0–100 in settings) and this 0–1 scale are interchangeable. */
+export const SCORING: { weights: ScoringWeights; threshold: number } = {
   // Semantics is deliberately a low-weight refiner, not a driver.
   weights: { lex: 0.40, sig: 0.25, case: 0.15, graph: 0.10, sem: 0.05, accept: 0.05 },
   /** Default Sensitivity slider position (0–100). */
@@ -355,7 +359,9 @@ export function scoreRegion(
   /** Re-rank hook: semScore in [0,1] for (span→target), or null when not yet available. */
   semScore?: (from: number, to: number, targetPath: string) => number | null,
   /** Learned-preference hook: acceptance in [0,1] for (stemmed-span→target), or null. */
-  acceptScore?: (stemKey: string, targetPath: string) => number | null
+  acceptScore?: (stemKey: string, targetPath: string) => number | null,
+  /** Signal weights (relative; renormalized per candidate). Defaults to SCORING. */
+  weights: ScoringWeights = SCORING.weights
 ): ScoredSuggestion[] {
   const threshold = computeThreshold01(sensitivity);
   const rejectSet = new Set(rejectList.map((r) => rejectKey(r.span, r.targetPath, r.notePath)));
@@ -384,7 +390,7 @@ export function scoreRegion(
   if (!atoms.length) return [];
   const stems = atoms.map((a) => stem(a.lower, lang));
 
-  const W = SCORING.weights;
+  const W = weights;
 
   // significance(span tokens): least-common (most distinctive) token drives the score.
   const significanceOf = (tokIdxs: number[]): number =>
@@ -571,6 +577,7 @@ export class AutoLinker {
   private learnedAliases = new Map<string, Set<string>>();  // targetPath → surface forms
   private acceptCounts   = new Map<string, number>();        // `${stemKey}|||${path}` → count
   private persistCb?: () => void;
+  private weights: ScoringWeights = SCORING.weights;
 
   private buckets: BucketConfig;
 
@@ -595,6 +602,9 @@ export class AutoLinker {
 
   /** Active-editor rescan callback (set from main); used after learning a new alias. */
   setRescan(cb: () => void) { this.rescanCb = cb; }
+
+  /** Update signal weights from settings (relative; renormalized at scan time). */
+  setWeights(w: ScoringWeights) { this.weights = w; }
 
   /** Where note vectors persist (set from main with the plugin dir). */
   setEmbeddingsPath(path: string) { this.embeddingsPath = path; }
@@ -716,7 +726,7 @@ export class AutoLinker {
     const sem = this.semHook(text);
     const result = scoreRegion(
       text, regionFrom, activeFilePath, this.titleIndex, this.rejectList,
-      sensitivity, this.graphScorer, this.buckets, sem, this.acceptHook()
+      sensitivity, this.graphScorer, this.buckets, sem, this.acceptHook(), this.weights
     );
     // Refine asynchronously: embed the candidates' sentences/targets, then rescan.
     if (sem) void this.warmAndRescan(text, regionFrom, result);
