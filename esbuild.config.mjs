@@ -28,6 +28,12 @@ const context = await esbuild.context({
   logLevel: "info",
   sourcemap: prod ? false : "inline",
   treeShaking: true,
+  // transformers.js calls fileURLToPath(import.meta.url) at load; in CJS output
+  // import.meta.url is undefined and throws. Define a valid (dummy) file URL — it
+  // only seeds the *local* model dir, which we don't use (models fetch remotely).
+  define: {
+    "import.meta.url": JSON.stringify("file:///C:/"),
+  },
   outfile: "main.js",
 });
 
