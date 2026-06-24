@@ -32,7 +32,7 @@ export default class AutoLinkerPlugin extends Plugin {
     );
 
     if (this.settings.enableAutoLinker) {
-      const linker = new AutoLinker(this.app);
+      const linker = new AutoLinker(this.app, this.settings.tokenizer);
       this.autoLinker = linker;
 
       await linker.load(() => this.loadData());
@@ -69,6 +69,13 @@ export default class AutoLinkerPlugin extends Plugin {
         })
       );
     }
+  }
+
+  /** Re-apply tokenizer buckets from settings: rebuild index + rescan. */
+  applyTokenizer() {
+    if (!this.autoLinker) return;
+    this.autoLinker.setBuckets(this.settings.tokenizer);
+    this.rescanActiveEditor();
   }
 
   rescanActiveEditor() {

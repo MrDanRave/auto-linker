@@ -1,6 +1,9 @@
 import { App, TFile, Component, MarkdownRenderer } from "obsidian";
 import { EditorView } from "@codemirror/view";
-import { Token, tokenize, analyzeCase, detectLang, stem, commonness } from "./nlp";
+import {
+  Token, analyzeCase, detectLang, stem, commonness,
+  BucketConfig, DEFAULT_BUCKETS, tokenizeAtoms, splitUnits, extractBase,
+} from "./nlp";
 import { GraphScorer } from "./graph";
 import {
   addDecoEffect,
@@ -36,10 +39,18 @@ export interface ScoredSuggestion extends Suggestion {
 
 /** Scoring weights + default Sensitivity value.  Exported so settings can "Restore defaults". */
 export const SCORING = {
-  weights: { lex: 0.40, sig: 0.25, case: 0.10, graph: 0.10, sem: 0.15 },
+  weights: { lex: 0.35, sig: 0.20, case: 0.10, graph: 0.10, sem: 0.15, accept: 0.10 },
   /** Default Sensitivity slider position (0–100). */
   threshold: 55,
 };
+
+/** Lexical penalty applied to a base (digit-variant father) match vs an exact token. */
+const BASE_MATCH_FACTOR = 0.85;
+/** Bonus lifting an *exact* single-token match above its raw IDF coverage —
+ *  a clean token equality is stronger evidence than coverage alone implies. */
+const EXACT_TOKEN_BONUS = 0.25;
+/** Confidence bonus when two adjacent anchors corroborate the same target (merge). */
+const MERGE_BONUS = 0.1;
 
 function computeThreshold01(sensitivity: number): number {
   // sensitivity 0 → strict (0.75), 100 → loose (0.30), default 55 ≈ 0.50
@@ -79,92 +90,165 @@ function rejectKey(span: string, targetPath: string, notePath: string | null): s
 // Title index
 // ---------------------------------------------------------------------------
 
+const MIN_TOKEN_LEN = 2;
+
+/** A title (or alias) decomposes into one or more anchor-delimited units.
+ *  Each unit is its own mini-title for matching: matching it fully = lexScore 1.0. */
+export interface Unit {
+  path: string;
+  tokens: string[];   // stemmed tokens of this unit, in order
+  phraseKey: string;  // tokens.join(" ")  — key for full-unit (n-gram) lookup
+}
+
+/** A weighted edge from a lookup token to a unit. `exact` = the token is a real
+ *  unit token; `exact:false` = it's a stripped base (digit-variant father). */
+interface TokenEdge {
+  unit: Unit;
+  token: string;   // the unit's actual token this edge resolves to
+  exact: boolean;
+}
+
 export class TitleIndex {
-  private index = new Map<string, string>();           // lowerTitle|alias → targetPath
-  private invertedIndex = new Map<string, Set<string>>(); // stemmedToken → Set<targetPath>
-  private forwardTokens = new Map<string, Set<string>>(); // targetPath → Set<stemmedToken>
-  private docFreq = new Map<string, number>();          // stemmedToken → # files containing it
-  private _totalDocs = 0;
+  private index = new Map<string, string>();              // lowerTitle|alias → path (kept for getPath compatibility)
+  private unitsByPath = new Map<string, Unit[]>();          // path → its units
+  private byToken = new Map<string, TokenEdge[]>();         // lookup token (exact or base) → edges
+  private byPhrase = new Map<string, Unit[]>();             // full phraseKey → units
+  private docFreq = new Map<string, number>();             // token → # notes whose title contains it (exact+base)
+  private _maxPhraseLen = 1;
+
+  buckets: BucketConfig = DEFAULT_BUCKETS;
 
   constructor(private app: App) {}
 
-  get totalDocs(): number { return this._totalDocs; }
+  get totalDocs(): number { return this.unitsByPath.size; }
+  get maxPhraseLen(): number { return this._maxPhraseLen; }
 
-  private nameToStemmed(name: string): Set<string> {
-    const lang = detectLang(name);
-    const stemmed = new Set<string>();
-    for (const t of tokenize(name)) {
-      if (t.text.length >= MIN_MATCH_LENGTH) {
-        stemmed.add(stem(t.lower, lang));
+  setBuckets(b: BucketConfig) { this.buckets = b; }
+
+  /** Decompose a name into units of stemmed tokens (≥ MIN_TOKEN_LEN). */
+  private nameToUnits(path: string, name: string): Unit[] {
+    const lang  = detectLang(name);
+    const atoms = tokenizeAtoms(name, this.buckets);
+    const units: Unit[] = [];
+    for (const unitAtoms of splitUnits(atoms)) {
+      const tokens: string[] = [];
+      for (const a of unitAtoms) {
+        if (a.text.length < MIN_TOKEN_LEN) continue;
+        tokens.push(stem(a.lower, lang));
+      }
+      if (tokens.length) units.push({ path, tokens, phraseKey: tokens.join(" ") });
+    }
+    return units;
+  }
+
+  private addUnits(path: string, units: Unit[]) {
+    if (!units.length) return;
+    this.unitsByPath.set(path, units);
+
+    const noteTokens = new Set<string>();  // distinct lookup tokens for df (per note)
+    for (const unit of units) {
+      this._maxPhraseLen = Math.max(this._maxPhraseLen, unit.tokens.length);
+
+      let arr = this.byPhrase.get(unit.phraseKey);
+      if (!arr) { arr = []; this.byPhrase.set(unit.phraseKey, arr); }
+      arr.push(unit);
+
+      for (const token of unit.tokens) {
+        this.pushEdge(token, { unit, token, exact: true });
+        noteTokens.add(token);
+        const base = extractBase(token);
+        if (base) {
+          this.pushEdge(base, { unit, token, exact: false });
+          noteTokens.add(base);
+        }
       }
     }
-    return stemmed;
+    for (const t of noteTokens) this.docFreq.set(t, (this.docFreq.get(t) ?? 0) + 1);
   }
 
-  private addToInverted(targetPath: string, names: string[]) {
-    // Collect union of stemmed tokens across all names for this file.
-    const allStemmed = new Set<string>();
-    for (const n of names) {
-      for (const s of this.nameToStemmed(n)) allStemmed.add(s);
-    }
-    if (allStemmed.size === 0) return;
-
-    this.forwardTokens.set(targetPath, allStemmed);
-    this._totalDocs++;
-
-    for (const s of allStemmed) {
-      let set = this.invertedIndex.get(s);
-      if (!set) { set = new Set(); this.invertedIndex.set(s, set); }
-      set.add(targetPath);
-      this.docFreq.set(s, (this.docFreq.get(s) ?? 0) + 1);
-    }
+  private pushEdge(key: string, edge: TokenEdge) {
+    let arr = this.byToken.get(key);
+    if (!arr) { arr = []; this.byToken.set(key, arr); }
+    arr.push(edge);
   }
 
-  private removeFromInverted(targetPath: string) {
-    const stemmedSet = this.forwardTokens.get(targetPath);
-    if (!stemmedSet) return;
+  private removeUnits(path: string) {
+    const units = this.unitsByPath.get(path);
+    if (!units) return;
+    this.unitsByPath.delete(path);
 
-    this.forwardTokens.delete(targetPath);
-    this._totalDocs = Math.max(0, this._totalDocs - 1);
-
-    for (const s of stemmedSet) {
-      const set = this.invertedIndex.get(s);
-      if (set) {
-        set.delete(targetPath);
-        if (set.size === 0) this.invertedIndex.delete(s);
+    const noteTokens = new Set<string>();
+    for (const unit of units) {
+      const arr = this.byPhrase.get(unit.phraseKey);
+      if (arr) {
+        const kept = arr.filter((u) => u !== unit);
+        if (kept.length) this.byPhrase.set(unit.phraseKey, kept);
+        else this.byPhrase.delete(unit.phraseKey);
       }
-      const df = (this.docFreq.get(s) ?? 1) - 1;
-      if (df <= 0) this.docFreq.delete(s);
-      else this.docFreq.set(s, df);
+      for (const token of unit.tokens) {
+        noteTokens.add(token);
+        const base = extractBase(token);
+        if (base) noteTokens.add(base);
+      }
+    }
+    for (const key of noteTokens) {
+      const arr = this.byToken.get(key);
+      if (arr) {
+        const kept = arr.filter((e) => e.unit.path !== path);
+        if (kept.length) this.byToken.set(key, kept);
+        else this.byToken.delete(key);
+      }
+      const df = (this.docFreq.get(key) ?? 1) - 1;
+      if (df <= 0) this.docFreq.delete(key);
+      else this.docFreq.set(key, df);
     }
   }
 
-  /** Paths of titles that share at least one stemmed token with `stemmedToken`. */
-  getCandidates(stemmedToken: string): Set<string> | undefined {
-    return this.invertedIndex.get(stemmedToken);
+  // ── Lookup / scoring helpers ───────────────────────────────────────────────
+
+  /** Full-unit matches for a contiguous n-gram (size ≥ 1). */
+  getUnitsByPhrase(phraseKey: string): Unit[] | undefined { return this.byPhrase.get(phraseKey); }
+
+  /** Partial / base matches for a single token. */
+  getEdges(token: string): TokenEdge[] | undefined { return this.byToken.get(token); }
+
+  /** Raw IDF weight log(1 + N/df); unknown token → max idf. Used for lexScore coverage ratios. */
+  idfWeight(token: string): number {
+    const N = this.totalDocs;
+    if (N === 0) return 1;
+    const df = this.docFreq.get(token) ?? 0;
+    return Math.log(1 + N / (df || 0.5));
   }
 
-  /** IDF score normalized to [0,1].  Higher = rarer across all note titles. */
-  normalizedIdf(stemmedToken: string): number {
-    const N = this._totalDocs;
+  /** IDF score normalized to [0,1]. Higher = rarer across all note titles. */
+  normalizedIdf(token: string): number {
+    const N = this.totalDocs;
     if (N === 0) return 0;
-    const df = this.docFreq.get(stemmedToken) ?? 0;
+    const df = this.docFreq.get(token) ?? 0;
     if (df === 0) return 1.0;
     const raw    = Math.log(1 + N / df);
     const maxIdf = Math.log(1 + N);
     const minIdf = Math.log(2);
-    return (raw - minIdf) / (maxIdf - minIdf + 1e-6);
+    return Math.max(0, Math.min(1, (raw - minIdf) / (maxIdf - minIdf + 1e-6)));
   }
+
+  /** Sum of IDF weights over a unit's tokens (the unit's total "information"). */
+  unitIdfSum(unit: Unit): number {
+    let s = 0;
+    for (const t of unit.tokens) s += this.idfWeight(t);
+    return s || 1;
+  }
+
+  // ── Build / maintenance ─────────────────────────────────────────────────────
 
   build() {
     this.index.clear();
-    this.invertedIndex.clear();
-    this.forwardTokens.clear();
+    this.unitsByPath.clear();
+    this.byToken.clear();
+    this.byPhrase.clear();
     this.docFreq.clear();
-    this._totalDocs = 0;
-    for (const file of this.app.vault.getMarkdownFiles()) {
-      this.addFile(file);
-    }
+    this._maxPhraseLen = 1;
+    for (const file of this.app.vault.getMarkdownFiles()) this.addFile(file);
   }
 
   addFile(file: TFile) {
@@ -174,115 +258,38 @@ export class TitleIndex {
     const names   = [file.basename];
     if (Array.isArray(aliases)) {
       for (const alias of aliases) {
-        if (typeof alias === "string") {
-          this.index.set(alias.toLowerCase(), file.path);
-          names.push(alias);
-        }
+        if (typeof alias === "string") { this.index.set(alias.toLowerCase(), file.path); names.push(alias); }
       }
     }
-    this.addToInverted(file.path, names);
+    const units: Unit[] = [];
+    for (const name of names) units.push(...this.nameToUnits(file.path, name));
+    this.addUnits(file.path, units);
   }
 
   removeFile(file: TFile) {
-    for (const [key, path] of this.index) {
-      if (path === file.path) this.index.delete(key);
-    }
-    this.removeFromInverted(file.path);
+    for (const [key, path] of this.index) if (path === file.path) this.index.delete(key);
+    this.removeUnits(file.path);
   }
 
   renameFile(file: TFile, oldPath: string) {
-    for (const [key, path] of this.index) {
-      if (path === oldPath) this.index.delete(key);
-    }
-    this.removeFromInverted(oldPath);
+    for (const [key, path] of this.index) if (path === oldPath) this.index.delete(key);
+    this.removeUnits(oldPath);
     this.addFile(file);
   }
 
-  entries(): [string, string][] { return [...this.index.entries()]; }
   getPath(lowerTitle: string): string | undefined { return this.index.get(lowerTitle); }
 }
 
 // ---------------------------------------------------------------------------
-// Scanner
+// Scored region scanner (Phase 4) — bucket tokenizer + weighted DAG index
 // ---------------------------------------------------------------------------
 
-const MIN_MATCH_LENGTH   = 3;
-const COVERAGE_THRESHOLD = 0.8;
 const LINK_PATTERN = /\[\[([^\]]+)\]\]/g;
 const TAG_PATTERN  = /#\w+/g;
 
-export function scanRegion(
-  text: string,
-  regionFrom: number,
-  activeFilePath: string,
-  index: TitleIndex,
-  rejectList: RejectEntry[]
-): Suggestion[] {
-  const suggestions: Suggestion[] = [];
-
-  // All reject keys; a candidate is blocked if a vault-bound OR a matching
-  // note-bound entry exists for it.
-  const rejectSet = new Set(rejectList.map((r) => rejectKey(r.span, r.targetPath, r.notePath)));
-
-  const skipRanges: Array<[number, number]> = [];
-  let m: RegExpExecArray | null;
-  LINK_PATTERN.lastIndex = 0;
-  while ((m = LINK_PATTERN.exec(text)) !== null)
-    skipRanges.push([regionFrom + m.index, regionFrom + m.index + m[0].length]);
-  TAG_PATTERN.lastIndex = 0;
-  while ((m = TAG_PATTERN.exec(text)) !== null)
-    skipRanges.push([regionFrom + m.index, regionFrom + m.index + m[0].length]);
-
-  function isSkipped(from: number, to: number) {
-    return skipRanges.some(([s, e]) => from < e && to > s);
-  }
-
-  const lowerText = text.toLowerCase();
-
-  for (const [lowerTitle, targetPath] of index.entries()) {
-    if (targetPath === activeFilePath) continue;
-    if (lowerTitle.length < MIN_MATCH_LENGTH) continue;
-
-    const L      = lowerTitle.length;
-    const minLen = Math.max(MIN_MATCH_LENGTH, Math.ceil(L * COVERAGE_THRESHOLD));
-
-    let matchedAtThisTitle = false;
-    for (let prefixLen = L; prefixLen >= minLen && !matchedAtThisTitle; prefixLen--) {
-      const prefix = lowerTitle.slice(0, prefixLen);
-      let pos = 0;
-      while ((pos = lowerText.indexOf(prefix, pos)) !== -1) {
-        const from = regionFrom + pos;
-        const to   = regionFrom + pos + prefixLen;
-
-        const charBefore     = text[pos - 1];
-        const charAfter      = text[pos + prefixLen];
-        const boundaryBefore = !charBefore || /\W/.test(charBefore);
-        const boundaryAfter  = !charAfter  || /\W/.test(charAfter);
-
-        if (boundaryBefore && boundaryAfter && !isSkipped(from, to)) {
-          const span = text.slice(pos, pos + prefixLen);
-          const blockedVault = rejectSet.has(rejectKey(span, targetPath, null));
-          const blockedNote  = rejectSet.has(rejectKey(span, targetPath, activeFilePath));
-          if (!blockedVault && !blockedNote) {
-            suggestions.push({
-              id: `${targetPath}::${from}::${to}`,
-              from, to, span, targetPath,
-              targetName: targetPath.split("/").pop()?.replace(/\.md$/, "") ?? targetPath,
-            });
-            matchedAtThisTitle = true;
-          }
-        }
-        pos += 1;
-      }
-    }
-  }
-
-  return suggestions;
+function targetNameOf(targetPath: string): string {
+  return targetPath.split("/").pop()?.replace(/\.md$/, "") ?? targetPath;
 }
-
-// ---------------------------------------------------------------------------
-// Scored region scanner (Phase 2) — replaces the binary scanRegion
-// ---------------------------------------------------------------------------
 
 export function scoreRegion(
   text: string,
@@ -291,140 +298,169 @@ export function scoreRegion(
   index: TitleIndex,
   rejectList: RejectEntry[],
   sensitivity: number,
-  graphScorer?: GraphScorer
+  graphScorer?: GraphScorer,
+  buckets: BucketConfig = DEFAULT_BUCKETS
 ): ScoredSuggestion[] {
   const threshold = computeThreshold01(sensitivity);
-
-  // Reject set
   const rejectSet = new Set(rejectList.map((r) => rejectKey(r.span, r.targetPath, r.notePath)));
 
-  // Skip ranges (existing [[links]], #tags)
+  // Skip ranges: existing [[links]] and #tags (offsets are local to `text`)
   const skipRanges: Array<[number, number]> = [];
   let m: RegExpExecArray | null;
   LINK_PATTERN.lastIndex = 0;
-  while ((m = LINK_PATTERN.exec(text)) !== null)
-    skipRanges.push([regionFrom + m.index, regionFrom + m.index + m[0].length]);
+  while ((m = LINK_PATTERN.exec(text)) !== null) skipRanges.push([m.index, m.index + m[0].length]);
   TAG_PATTERN.lastIndex = 0;
-  while ((m = TAG_PATTERN.exec(text)) !== null)
-    skipRanges.push([regionFrom + m.index, regionFrom + m.index + m[0].length]);
-  function isSkipped(from: number, to: number) {
-    return skipRanges.some(([s, e]) => from < e && to > s);
-  }
+  while ((m = TAG_PATTERN.exec(text)) !== null) skipRanges.push([m.index, m.index + m[0].length]);
+  const isSkipped = (from: number, to: number) => skipRanges.some(([s, e]) => from < e && to > s);
 
-  // Detect region language once; use for all stems and commonness lookups
-  const lang = detectLang(text);
+  const lang  = detectLang(text);
+  const atoms = tokenizeAtoms(text, buckets);
+  if (!atoms.length) return [];
+  const stems = atoms.map((a) => stem(a.lower, lang));
 
-  // Candidate lookup: tokenize the text, stem each token, union the matching paths
-  const candidatePathSet = new Set<string>();
-  for (const tok of tokenize(text)) {
-    if (tok.text.length < MIN_MATCH_LENGTH) continue;
-    const stemmed = stem(tok.lower, lang);
-    const hits = index.getCandidates(stemmed);
-    if (hits) for (const p of hits) candidatePathSet.add(p);
-  }
+  // Weight renormalization over *available* signals (graph when present; sem/accept later).
+  const W       = SCORING.weights;
+  const activeW = W.lex + W.sig + W.case + (graphScorer ? W.graph : 0);
+  const wLex    = W.lex  / activeW;
+  const wSig    = W.sig  / activeW;
+  const wCase   = W.case / activeW;
+  const wGraph  = graphScorer ? W.graph / activeW : 0;
 
-  // Renormalize weights — include graph when scorer is available; sem=0 until Phase 4
-  const W        = SCORING.weights;
-  const activeW  = W.lex + W.sig + W.case + (graphScorer ? W.graph : 0);
-  const wLex     = W.lex   / activeW;
-  const wSig     = W.sig   / activeW;
-  const wCase    = W.case  / activeW;
-  const wGraph   = graphScorer ? W.graph / activeW : 0;
+  // significance(span tokens): least-common (most distinctive) token drives the score.
+  const significanceOf = (tokIdxs: number[]): number =>
+    Math.max(
+      ...tokIdxs.map((i) => {
+        const common = commonness(atoms[i].lower, lang);
+        const idfN   = index.normalizedIdf(stems[i]);
+        return (1 - common) * (0.5 + 0.5 * idfN);
+      })
+    );
 
-  const lowerText = text.toLowerCase();
-  const scored: ScoredSuggestion[] = [];
+  const caseOf = (from: number, to: number, tokIdxs: number[]): number => {
+    const spanText = text.slice(from, to);
+    const tok: Token = { text: spanText, lower: spanText.toLowerCase(), start: from, end: to };
+    const c = analyzeCase(tok, text);
+    if (c.type === "allcaps") return 1.0;
+    if (c.type === "titlecase") return c.isSentenceStart ? 0.0 : 0.8;
+    if (c.type === "lower") {
+      const maxCommon = Math.max(...tokIdxs.map((i) => commonness(atoms[i].lower, lang)));
+      return maxCommon > 0.5 ? -1.5 : 0.0;  // suppress lowercase function words
+    }
+    return 0.0;
+  };
 
-  for (const [lowerTitle, targetPath] of index.entries()) {
-    if (targetPath === activeFilePath) continue;
-    if (!candidatePathSet.has(targetPath)) continue;
-    if (lowerTitle.length < MIN_MATCH_LENGTH) continue;
+  interface Cand { from: number; to: number; span: string; targetPath: string; lexScore: number; tokIdxs: number[]; }
+  const cands: Cand[] = [];
 
-    const L      = lowerTitle.length;
-    const minLen = Math.max(MIN_MATCH_LENGTH, Math.ceil(L * COVERAGE_THRESHOLD));
+  const maxN = Math.min(index.maxPhraseLen, atoms.length);
+  for (let size = maxN; size >= 1; size--) {
+    for (let i = 0; i + size <= atoms.length; i++) {
+      // A window may not cross an anchor gap (anchors delimit independent units).
+      let crossesAnchor = false;
+      for (let j = i + 1; j < i + size; j++) if (atoms[j].gapBefore === "anchor") { crossesAnchor = true; break; }
+      if (crossesAnchor) continue;
 
-    let matchedAtThisTitle = false;
-    for (let prefixLen = L; prefixLen >= minLen && !matchedAtThisTitle; prefixLen--) {
-      const prefix = lowerTitle.slice(0, prefixLen);
-      let pos = 0;
-      while ((pos = lowerText.indexOf(prefix, pos)) !== -1) {
-        const from = regionFrom + pos;
-        const to   = regionFrom + pos + prefixLen;
+      const from = atoms[i].start;
+      const to   = atoms[i + size - 1].end;
+      if (isSkipped(from, to)) continue;
+      const tokIdxs: number[] = [];
+      for (let j = i; j < i + size; j++) tokIdxs.push(j);
+      const span = text.slice(from, to);
 
-        const charBefore     = text[pos - 1];
-        const charAfter      = text[pos + prefixLen];
-        const boundaryBefore = !charBefore || /\W/.test(charBefore);
-        const boundaryAfter  = !charAfter  || /\W/.test(charAfter);
+      // Full-unit (phrase) match → lexScore 1.0
+      const phraseKey = stems.slice(i, i + size).join(" ");
+      const fullUnits = index.getUnitsByPhrase(phraseKey);
+      if (fullUnits) {
+        for (const unit of fullUnits) {
+          if (unit.path === activeFilePath) continue;
+          cands.push({ from, to, span, targetPath: unit.path, lexScore: 1.0, tokIdxs });
+        }
+      }
 
-        if (boundaryBefore && boundaryAfter && !isSkipped(from, to)) {
-          const span      = text.slice(pos, pos + prefixLen);
-          const spanLower = span.toLowerCase();
-
-          const blockedVault = rejectSet.has(rejectKey(span, targetPath, null));
-          const blockedNote  = rejectSet.has(rejectKey(span, targetPath, activeFilePath));
-          if (blockedVault || blockedNote) { pos += 1; continue; }
-
-          // ── lex score ──────────────────────────────────────────────────
-          const coverage = prefixLen / L;
-          const lexScore = coverage >= 1.0
-            ? 1.0
-            : 0.6 + ((coverage - 0.8) / (1.0 - 0.8)) * (0.95 - 0.6);
-
-          // ── significance ───────────────────────────────────────────────
-          // Multi-word spans: take the least common (most distinctive) token
-          const spanTokens = spanLower.split(/\s+/);
-          const sigScore   = Math.max(
-            ...spanTokens.map((t) => 0.05 + 0.85 * (1 - commonness(t, lang)))
-          );
-
-          // ── case score ([-1, 1]; negative = penalty) ───────────────────
-          const spanToken: Token = { text: span, lower: spanLower, start: pos, end: pos + prefixLen };
-          const caseA = analyzeCase(spanToken, text);
-          let caseScore: number;
-          if (caseA.type === "allcaps") {
-            caseScore = 1.0;
-          } else if (caseA.type === "titlecase" && !caseA.isSentenceStart) {
-            caseScore = 0.8;
-          } else if (caseA.type === "titlecase" && caseA.isSentenceStart) {
-            caseScore = 0.0; // could just be sentence-start capital
-          } else if (caseA.type === "lower") {
-            // Penalty for truly common function words (HIGH_FREQ, commonness 0.9).
-            // -1.5 (not -1.0) so the penalty holds even when graph score is maximal.
-            const maxCommon = Math.max(...spanTokens.map((t) => commonness(t, lang)));
-            caseScore = maxCommon > 0.5 ? -1.5 : 0.0;
-          } else {
-            caseScore = 0.0;
-          }
-
-          const gScore     = graphScorer ? graphScorer.getScore(targetPath) : 0;
-          const confidence = wLex * lexScore + wSig * sigScore + wCase * caseScore + wGraph * gScore;
-
-          if (confidence >= threshold) {
-            scored.push({
-              id: `${targetPath}::${from}::${to}`,
-              from, to, span, targetPath,
-              targetName: targetPath.split("/").pop()?.replace(/\.md$/, "") ?? targetPath,
-              confidence,
-              matchType: "literal",
-            });
-            matchedAtThisTitle = true;
+      // Single-token partial / base match → IDF-weighted coverage of the unit
+      if (size === 1) {
+        const edges = index.getEdges(stems[i]);
+        if (edges) {
+          for (const e of edges) {
+            if (e.unit.path === activeFilePath) continue;
+            if (e.unit.tokens.length === 1 && e.exact) continue; // already covered as a full unit above
+            const coverage = Math.min(1, index.idfWeight(e.token) / index.unitIdfSum(e.unit));
+            // Exact token → lift above raw coverage; base (digit father) → penalize.
+            const lex = e.exact
+              ? coverage + (1 - coverage) * EXACT_TOKEN_BONUS
+              : coverage * BASE_MATCH_FACTOR;
+            cands.push({ from, to, span, targetPath: e.unit.path, lexScore: lex, tokIdxs });
           }
         }
-        pos += 1;
       }
     }
   }
 
-  // Dedup overlapping spans: keep highest confidence (scored is already sorted by confidence desc below)
-  scored.sort((a, b) => b.confidence - a.confidence);
-  const result: ScoredSuggestion[] = [];
-  const usedRanges: Array<[number, number]> = [];
-  for (const s of scored) {
-    if (!usedRanges.some(([sf, st]) => s.from < st && s.to > sf)) {
-      result.push(s);
-      usedRanges.push([s.from, s.to]);
+  // Score each candidate.
+  const scored: ScoredSuggestion[] = [];
+  for (const c of cands) {
+    const blockedVault = rejectSet.has(rejectKey(c.span, c.targetPath, null));
+    const blockedNote  = rejectSet.has(rejectKey(c.span, c.targetPath, activeFilePath));
+    if (blockedVault || blockedNote) continue;
+
+    const sig  = significanceOf(c.tokIdxs);
+    const cse  = caseOf(c.from, c.to, c.tokIdxs);
+    const grph = graphScorer ? graphScorer.getScore(c.targetPath) : 0;
+    const confidence = wLex * c.lexScore + wSig * sig + wCase * cse + wGraph * grph;
+    if (confidence < threshold) continue;
+
+    scored.push({
+      id: `${c.targetPath}::${regionFrom + c.from}::${regionFrom + c.to}`,
+      from: regionFrom + c.from,
+      to:   regionFrom + c.to,
+      span: c.span,
+      targetPath: c.targetPath,
+      targetName: targetNameOf(c.targetPath),
+      confidence,
+      matchType: "literal",
+    });
+  }
+
+  return dedupe(scored, text, regionFrom);
+}
+
+/**
+ * Dedup policies (§3e):
+ *   (b) MERGE adjacent same-target spans separated only by non-content → one span, +bonus.
+ *   (a/c) OVERLAP: keep the highest-confidence span; suppress any overlapping (incl. contained) span.
+ */
+function dedupe(scored: ScoredSuggestion[], text: string, regionFrom: number): ScoredSuggestion[] {
+  if (scored.length <= 1) return scored;
+
+  // (b) Merge corroborating adjacent anchors of the same target.
+  const byPos = [...scored].sort((a, b) => a.from - b.from || a.to - b.to);
+  const merged: ScoredSuggestion[] = [];
+  for (const s of byPos) {
+    const prev = merged[merged.length - 1];
+    if (prev && prev.targetPath === s.targetPath && s.from >= prev.to) {
+      const gap = text.slice(prev.to - regionFrom, s.from - regionFrom);
+      if (/^[^\p{L}\p{N}]*$/u.test(gap)) {
+        prev.to   = Math.max(prev.to, s.to);
+        prev.span = text.slice(prev.from - regionFrom, prev.to - regionFrom);
+        prev.confidence = Math.min(1, Math.max(prev.confidence, s.confidence) + MERGE_BONUS);
+        prev.id = `${prev.targetPath}::${prev.from}::${prev.to}`;
+        continue;
+      }
+    }
+    merged.push({ ...s });
+  }
+
+  // (a/c) Overlap resolution — highest confidence wins; ties prefer the longer span.
+  merged.sort((a, b) => b.confidence - a.confidence || (b.to - b.from) - (a.to - a.from));
+  const kept: ScoredSuggestion[] = [];
+  const used: Array<[number, number]> = [];
+  for (const s of merged) {
+    if (!used.some(([f, t]) => s.from < t && s.to > f)) {
+      kept.push(s);
+      used.push([s.from, s.to]);
     }
   }
-  return result;
+  return kept;
 }
 
 // ---------------------------------------------------------------------------
@@ -437,9 +473,20 @@ export class AutoLinker {
   private rejectList: RejectEntry[] = [];
   private readonly DATA_KEY = "autoLinker";
 
-  constructor(private app: App) {
+  private buckets: BucketConfig;
+
+  constructor(private app: App, buckets: BucketConfig = DEFAULT_BUCKETS) {
+    this.buckets     = buckets;
     this.titleIndex  = new TitleIndex(app);
+    this.titleIndex.setBuckets(buckets);
     this.graphScorer = new GraphScorer(app);
+  }
+
+  /** Update tokenizer buckets (from settings) and rebuild the index. */
+  setBuckets(buckets: BucketConfig) {
+    this.buckets = buckets;
+    this.titleIndex.setBuckets(buckets);
+    this.titleIndex.build();
   }
 
   async load(loadData: () => Promise<Record<string, unknown> | null>) {
@@ -491,7 +538,7 @@ export class AutoLinker {
   }
 
   scan(text: string, regionFrom: number, activeFilePath: string, sensitivity = SCORING.threshold): ScoredSuggestion[] {
-    return scoreRegion(text, regionFrom, activeFilePath, this.titleIndex, this.rejectList, sensitivity, this.graphScorer);
+    return scoreRegion(text, regionFrom, activeFilePath, this.titleIndex, this.rejectList, sensitivity, this.graphScorer, this.buckets);
   }
 
   destroy() {

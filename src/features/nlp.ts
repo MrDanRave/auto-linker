@@ -68,6 +68,115 @@ export function tokenize(text: string): Token[] {
 }
 
 // ---------------------------------------------------------------------------
+// Bucket-driven tokenization (Phase 4)
+//
+// Every non-alphanumeric character belongs to exactly one bucket:
+//   - intra  : kept *inside* a token when flanked by content (e.g. "802.1q")
+//   - anchor : a strong separator — each side is an independent anchor to the note
+//   - phrase : a weak separator — parts are weak, the contiguous run is the match
+// Whitespace and any unclassified punctuation default to phrase separators.
+// ---------------------------------------------------------------------------
+
+export interface BucketConfig {
+  intra: string;   // chars kept inside tokens between content chars
+  phrase: string;  // weak separators
+  anchor: string;  // strong (doubler) separators
+}
+
+export const DEFAULT_BUCKETS: BucketConfig = {
+  intra:  ".",
+  phrase: "/-",
+  anchor: ":=+;",
+};
+
+export type GapKind = "none" | "phrase" | "anchor";
+
+export interface Atom {
+  text: string;
+  lower: string;
+  start: number;       // offset in source text (inclusive)
+  end: number;         // offset (exclusive)
+  gapBefore: GapKind;  // strongest separator between the previous atom and this one
+}
+
+function isLetterOrNumber(ch: string): boolean {
+  return /[\p{L}\p{N}]/u.test(ch);
+}
+
+/**
+ * Split `text` into atoms (maximal runs of content chars, with intra chars kept
+ * inside when flanked by content). Each atom records the strongest separator
+ * encountered since the previous atom, so callers can avoid crossing anchors.
+ */
+export function tokenizeAtoms(text: string, b: BucketConfig = DEFAULT_BUCKETS): Atom[] {
+  const atoms: Atom[] = [];
+  let buf = "";
+  let atomStart = 0;
+  let pendingGap: GapKind = "none";
+  const n = text.length;
+
+  const flush = (end: number) => {
+    if (buf !== "") {
+      atoms.push({ text: buf, lower: buf.toLowerCase(), start: atomStart, end, gapBefore: pendingGap });
+      buf = "";
+      pendingGap = "none";
+    }
+  };
+
+  let i = 0;
+  while (i < n) {
+    const ch = text[i];
+    if (isLetterOrNumber(ch)) {
+      if (buf === "") atomStart = i;
+      buf += ch;
+      i++;
+    } else if (
+      b.intra.includes(ch) &&
+      buf !== "" &&
+      i + 1 < n &&
+      (isLetterOrNumber(text[i + 1]) || b.intra.includes(text[i + 1]))
+    ) {
+      // intra char inside a token (e.g. the '.' in "802.1q")
+      buf += ch;
+      i++;
+    } else {
+      // separator
+      flush(i);
+      const cls: GapKind = b.anchor.includes(ch) ? "anchor" : "phrase";
+      if (cls === "anchor") pendingGap = "anchor";
+      else if (pendingGap !== "anchor") pendingGap = "phrase";
+      i++;
+    }
+  }
+  flush(n);
+  return atoms;
+}
+
+/** Split a flat atom list into units, breaking wherever an anchor separator occurred. */
+export function splitUnits(atoms: Atom[]): Atom[][] {
+  const units: Atom[][] = [];
+  let cur: Atom[] = [];
+  for (const a of atoms) {
+    if (a.gapBefore === "anchor" && cur.length) { units.push(cur); cur = []; }
+    cur.push(a);
+  }
+  if (cur.length) units.push(cur);
+  return units;
+}
+
+/**
+ * Strip trailing digits/specials to get a base token (the "father" of a digit
+ * variant). Returns null when there's nothing to strip or the base is too short.
+ * "hub1" → "hub";  "fig12" → "fig";  "802.1q" → null (no trailing digits);
+ * "v2" → null (base "v" too short).
+ */
+export function extractBase(token: string): string | null {
+  const base = token.replace(/[0-9._+-]+$/u, "");
+  if (base.length >= 2 && base !== token) return base;
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // Case analysis
 // ---------------------------------------------------------------------------
 

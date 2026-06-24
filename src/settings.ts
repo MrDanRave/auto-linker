@@ -1,16 +1,20 @@
 import { App, PluginSettingTab, Setting } from "obsidian";
 import type AutoLinkerPlugin from "./main";
+import { BucketConfig, DEFAULT_BUCKETS } from "./features/nlp";
 
 export interface AutoLinkerSettings {
   enableAutoLinker: boolean;
   /** 0–100; maps to confidence threshold via lerp(0.75, 0.30, t/100).
    *  0 = strictest (threshold 0.75), 100 = loosest (threshold 0.30), default 55 ≈ 0.50 */
   sensitivity: number;
+  /** Per-vault tokenizer character buckets (intra / phrase / anchor). */
+  tokenizer: BucketConfig;
 }
 
 export const DEFAULT_SETTINGS: AutoLinkerSettings = {
   enableAutoLinker: true,
   sensitivity: 55,
+  tokenizer: { ...DEFAULT_BUCKETS },
 };
 
 interface RejectRow {
@@ -66,6 +70,51 @@ export class AutoLinkerSettingTab extends PluginSettingTab {
             this.plugin.rescanActiveEditor();
           })
       );
+
+    // ── Tokenizer buckets ─────────────────────────────────────────────────
+    new Setting(containerEl).setName("Tokenizer").setHeading();
+    containerEl.createEl("p", {
+      cls: "auto-linker-settings-desc",
+      text:
+        "How note titles split into matchable tokens. Whitespace always separates. " +
+        "Intra: kept inside a token (e.g. the dot in 802.1q). Phrase: weak separators — " +
+        "the whole run matches, parts only if distinctive. Anchor: strong separators — " +
+        "each part independently suggests the note.",
+    });
+
+    const bucketSetting = (
+      name: string,
+      desc: string,
+      key: keyof BucketConfig,
+    ) =>
+      new Setting(containerEl)
+        .setName(name)
+        .setDesc(desc)
+        .addText((txt) =>
+          txt
+            .setValue(this.plugin.settings.tokenizer[key])
+            .setPlaceholder(DEFAULT_BUCKETS[key])
+            .onChange(async (value) => {
+              this.plugin.settings.tokenizer[key] = value;
+              await this.plugin.saveSettings();
+              this.plugin.applyTokenizer();
+            }),
+        );
+
+    bucketSetting("Intra-token characters", "Kept inside tokens (default: .)", "intra");
+    bucketSetting("Phrase separators", "Weak separators (default: /-)", "phrase");
+    bucketSetting("Anchor separators", "Strong separators / doublers (default: :=+;)", "anchor");
+
+    new Setting(containerEl).addButton((btn) =>
+      btn
+        .setButtonText("Restore tokenizer defaults")
+        .onClick(async () => {
+          this.plugin.settings.tokenizer = { ...DEFAULT_BUCKETS };
+          await this.plugin.saveSettings();
+          this.plugin.applyTokenizer();
+          this.display();
+        }),
+    );
 
     // ── Rejected suggestions browser ─────────────────────────────────────
     const linker = this.plugin.autoLinker;
