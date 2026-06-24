@@ -2,7 +2,7 @@ import { App, TFile, Component, MarkdownRenderer } from "obsidian";
 import { EditorView } from "@codemirror/view";
 import {
   Token, analyzeCase, detectLang, stem, commonness,
-  BucketConfig, DEFAULT_BUCKETS, tokenizeAtoms, splitUnits, extractBase,
+  BucketConfig, DEFAULT_BUCKETS, tokenizeAtoms, splitUnits, extractBase, editDistance,
 } from "./nlp";
 import { GraphScorer } from "./graph";
 import {
@@ -51,6 +51,10 @@ const BASE_MATCH_FACTOR = 0.85;
 const EXACT_TOKEN_BONUS = 0.25;
 /** Confidence bonus when two adjacent anchors corroborate the same target (merge). */
 const MERGE_BONUS = 0.1;
+/** Fuzzy (typo) matching: minimum token length to attempt, and the length below
+ *  which only a single edit is tolerated.  Short tokens stay exact-only to avoid noise. */
+const FUZZY_MIN_LEN   = 4;
+const FUZZY_SHORT_LEN = 5;
 
 function computeThreshold01(sensitivity: number): number {
   // sensitivity 0 → strict (0.75), 100 → loose (0.30), default 55 ≈ 0.50
@@ -113,6 +117,7 @@ export class TitleIndex {
   private unitsByPath = new Map<string, Unit[]>();          // path → its units
   private byToken = new Map<string, TokenEdge[]>();         // lookup token (exact or base) → edges
   private byPhrase = new Map<string, Unit[]>();             // full phraseKey → units
+  private firstChar = new Map<string, Set<string>>();       // token[0] → set of lookup tokens (fuzzy prefilter)
   private docFreq = new Map<string, number>();             // token → # notes whose title contains it (exact+base)
   private _maxPhraseLen = 1;
 
@@ -170,6 +175,10 @@ export class TitleIndex {
     let arr = this.byToken.get(key);
     if (!arr) { arr = []; this.byToken.set(key, arr); }
     arr.push(edge);
+    const c = key[0];
+    let set = this.firstChar.get(c);
+    if (!set) { set = new Set(); this.firstChar.set(c, set); }
+    set.add(key);
   }
 
   private removeUnits(path: string) {
@@ -196,7 +205,10 @@ export class TitleIndex {
       if (arr) {
         const kept = arr.filter((e) => e.unit.path !== path);
         if (kept.length) this.byToken.set(key, kept);
-        else this.byToken.delete(key);
+        else {
+          this.byToken.delete(key);
+          this.firstChar.get(key[0])?.delete(key);
+        }
       }
       const df = (this.docFreq.get(key) ?? 1) - 1;
       if (df <= 0) this.docFreq.delete(key);
@@ -211,6 +223,21 @@ export class TitleIndex {
 
   /** Partial / base matches for a single token. */
   getEdges(token: string): TokenEdge[] | undefined { return this.byToken.get(token); }
+
+  /** Index tokens within edit distance `maxDist` of `token` (excludes exact).
+   *  Prefiltered by shared first character + length, so it touches one bucket. */
+  fuzzyMatch(token: string, maxDist: number): Array<{ key: string; dist: number }> {
+    const out: Array<{ key: string; dist: number }> = [];
+    const bucket = this.firstChar.get(token[0]);
+    if (!bucket) return out;
+    for (const key of bucket) {
+      if (key === token) continue;
+      if (Math.abs(key.length - token.length) > maxDist) continue;
+      const d = editDistance(token, key, maxDist);
+      if (d >= 1 && d <= maxDist) out.push({ key, dist: d });
+    }
+    return out;
+  }
 
   /** Raw IDF weight log(1 + N/df); unknown token → max idf. Used for lexScore coverage ratios. */
   idfWeight(token: string): number {
@@ -246,6 +273,7 @@ export class TitleIndex {
     this.unitsByPath.clear();
     this.byToken.clear();
     this.byPhrase.clear();
+    this.firstChar.clear();
     this.docFreq.clear();
     this._maxPhraseLen = 1;
     for (const file of this.app.vault.getMarkdownFiles()) this.addFile(file);
@@ -397,6 +425,24 @@ export function scoreRegion(
               ? coverage + (1 - coverage) * EXACT_TOKEN_BONUS
               : coverage * BASE_MATCH_FACTOR;
             cands.push({ from, to, span, targetPath: e.unit.path, lexScore: lex, tokIdxs });
+          }
+        }
+
+        // Fuzzy (typo) match → IDF coverage penalized by edit distance.  Always
+        // below an exact hit; short tokens stay exact-only to avoid noise.
+        const qStem = stems[i];
+        if (qStem.length >= FUZZY_MIN_LEN) {
+          const maxDist = qStem.length <= FUZZY_SHORT_LEN ? 1 : 2;
+          for (const { key, dist } of index.fuzzyMatch(qStem, maxDist)) {
+            const fuzzyEdges = index.getEdges(key);
+            if (!fuzzyEdges) continue;
+            for (const e of fuzzyEdges) {
+              if (!e.exact) continue;                 // fuzzy-match real tokens, not bases
+              if (e.unit.path === activeFilePath) continue;
+              const coverage = Math.min(1, index.idfWeight(e.token) / index.unitIdfSum(e.unit));
+              const fuzzyFactor = 1 - dist / Math.max(qStem.length, e.token.length);
+              cands.push({ from, to, span, targetPath: e.unit.path, lexScore: coverage * fuzzyFactor, tokIdxs });
+            }
           }
         }
       }

@@ -176,6 +176,31 @@ export function extractBase(token: string): string | null {
   return null;
 }
 
+/**
+ * Levenshtein distance with an early-exit cap. Returns the true distance if it
+ * is ≤ `max`, otherwise `max + 1` (so callers only learn "too far", cheaply).
+ */
+export function editDistance(a: string, b: string, max: number): number {
+  const la = a.length, lb = b.length;
+  if (Math.abs(la - lb) > max) return max + 1;
+  if (a === b) return 0;
+  let prev: number[] = [];
+  for (let j = 0; j <= lb; j++) prev[j] = j;
+  for (let i = 1; i <= la; i++) {
+    const curr: number[] = [i];
+    let rowMin = i;
+    for (let j = 1; j <= lb; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      const v = Math.min(prev[j] + 1, curr[j - 1] + 1, prev[j - 1] + cost);
+      curr.push(v);
+      if (v < rowMin) rowMin = v;
+    }
+    if (rowMin > max) return max + 1;   // whole row exceeds budget → bail
+    prev = curr;
+  }
+  return prev[lb] <= max ? prev[lb] : max + 1;
+}
+
 // ---------------------------------------------------------------------------
 // Case analysis
 // ---------------------------------------------------------------------------

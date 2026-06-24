@@ -370,9 +370,15 @@ perceptible typing lag on a few-hundred-note vault.
 
 ---
 
-## PHASE 5 — Typo / fuzzy tolerance
+## PHASE 5 — Typo / fuzzy tolerance ✅ SHIPPED (v1.3.2)
 
-**Goal:** finish the `lexScore` definition with bounded fuzzy matching so small typos
+`editDistance` (bounded Levenshtein, early-exit) in `nlp.ts`; `TitleIndex.fuzzyMatch`
+prefilters by first-char bucket + length so it touches one bucket; `scoreRegion` adds
+fuzzy single-token candidates with `lexScore = coverage × (1 − d/L)`. Caps: tokens
+≥ `FUZZY_MIN_LEN` (4) only, `d ≤ 1` for short (≤ 5) tokens else `d ≤ 2`. Exact > base >
+fuzzy by construction. The length guard keeps `hub`/`hubble`-type noise out.
+
+**Goal (orig):** finish the `lexScore` definition with bounded fuzzy matching so small typos
 still match (the reason we dropped mid-word matching).
 
 - Add edit-distance matching for candidate tokens: `max(0, 1 − d/L)`, capped at `d ≤ 2`
