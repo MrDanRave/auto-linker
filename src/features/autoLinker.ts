@@ -492,7 +492,7 @@ export function scoreRegion(
   }
 
   // ── Pass 1: score every candidate — base (non-semantic) and full confidence ──
-  interface Pre { c: Cand; baseConf: number; fullConf: number; }
+  interface Pre { c: Cand; baseConf: number; fullConf: number; semApplied: boolean; }
   const pre: Pre[] = [];
   for (const c of cands) {
     const blockedVault = rejectSet.has(rejectKey(c.span, c.targetPath, null));
@@ -514,29 +514,33 @@ export function scoreRegion(
     const baseConf = nBase / wBase;
 
     let fullConf = baseConf;
+    let semApplied = false;
     if (semScore) {
       const sv = semScore(c.from, c.to, c.targetPath);
-      if (sv != null) fullConf = (nBase + W.sem * sv) / (wBase + W.sem);
+      if (sv != null) { fullConf = (nBase + W.sem * sv) / (wBase + W.sem); semApplied = true; }
     }
-    pre.push({ c, baseConf, fullConf });
+    pre.push({ c, baseConf, fullConf, semApplied });
   }
 
-  // ── Pass 2: keep suggestible candidates; mark "semantic" when meaning decided
-  // the outcome — either it crossed the threshold that text alone couldn't, OR an
-  // overlapping different-target candidate was as strong (or stronger) on text
-  // alone, so meaning is what flipped/held the winner. ──
+  // ── Pass 2: keep suggestible candidates; mark "semantic" ONLY when the meaning
+  // signal was actually applied AND it decided the outcome — either it crossed the
+  // threshold that text alone couldn't, OR an overlapping different-target candidate
+  // was as strong (or stronger) on text alone, so meaning flipped/held the winner.
+  // (Without an applied sem signal, a literal tie is NOT semantic — it's just a tie.) ──
   const overlaps = (a: Cand, b: Cand) => a.from < b.to && a.to > b.from;
   const scored: ScoredSuggestion[] = [];
   for (const p of pre) {
     if (p.fullConf < threshold) continue;
     let matchType: MatchType = "literal";
-    if (p.baseConf < threshold) {
-      matchType = "semantic";
-    } else {
-      for (const q of pre) {
-        if (q.c.targetPath !== p.c.targetPath && overlaps(q.c, p.c) && q.baseConf >= p.baseConf) {
-          matchType = "semantic";
-          break;
+    if (p.semApplied) {
+      if (p.baseConf < threshold) {
+        matchType = "semantic";   // meaning lifted it over a bar text alone couldn't clear
+      } else {
+        for (const q of pre) {
+          if (q.semApplied && q.c.targetPath !== p.c.targetPath && overlaps(q.c, p.c) && q.baseConf >= p.baseConf) {
+            matchType = "semantic"; // a literal co-leader existed; meaning chose this one
+            break;
+          }
         }
       }
     }
