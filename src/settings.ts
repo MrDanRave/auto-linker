@@ -38,9 +38,18 @@ export const DEFAULT_SETTINGS: AutoLinkerSettings = {
   tokenizer: { ...DEFAULT_BUCKETS },
 };
 
-/** Soft-block shown before the first semantic-model download. */
+/** Soft-block shown when enabling semantic linking: download the default model,
+ *  or use a model already on disk. */
 class SemanticEnableModal extends Modal {
-  constructor(app: App, private onConfirm: () => void, private onCancel: () => void) {
+  constructor(
+    app: App,
+    private opts: {
+      initialPath: string;
+      onDownload: () => void;
+      onUseLocal: (path: string) => void;
+      onCancel: () => void;
+    },
+  ) {
     super(app);
   }
   onOpen() {
@@ -49,20 +58,35 @@ class SemanticEnableModal extends Modal {
     contentEl.createEl("p", {
       text:
         "Semantic linking uses a small on-device embedding model to rank suggestions " +
-        "by meaning. The model (" + DEFAULT_MODEL + ", ~50 MB) is downloaded once, then " +
-        "stored locally and used fully offline — no note content ever leaves your device.",
+        "by meaning — fully offline, no note content ever leaves your device.",
     });
     contentEl.createEl("p", {
       cls: "auto-linker-settings-desc",
       text:
-        "Already have a model? Cancel, set \"Local model path\" below to your own model, " +
-        "then enable again — nothing will be downloaded.",
+        "Download the default model (" + DEFAULT_MODEL + ", ~50 MB, one time), or use a " +
+        "model you already have on disk by entering its path below.",
     });
+
+    const input = contentEl.createEl("input", {
+      type: "text",
+      cls: "auto-linker-model-input",
+      attr: { placeholder: "/path/to/your/model", style: "width: 100%; margin-bottom: 12px;" },
+    });
+    input.value = this.opts.initialPath ?? "";
+
     const row = contentEl.createEl("div", { cls: "modal-button-container" });
-    const cancel = row.createEl("button", { text: "Cancel" });
-    const ok = row.createEl("button", { text: "Download & enable", cls: "mod-cta" });
-    cancel.addEventListener("click", () => { this.onCancel(); this.close(); });
-    ok.addEventListener("click", () => { this.onConfirm(); this.close(); });
+    const cancel   = row.createEl("button", { text: "Cancel" });
+    const useLocal = row.createEl("button", { text: "Use local model" });
+    const download = row.createEl("button", { text: "Download", cls: "mod-cta" });
+
+    cancel.addEventListener("click", () => { this.opts.onCancel(); this.close(); });
+    download.addEventListener("click", () => { this.opts.onDownload(); this.close(); });
+    useLocal.addEventListener("click", () => {
+      const path = input.value.trim();
+      if (!path) { new Notice("Enter the path to your local model first."); return; }
+      this.opts.onUseLocal(path);
+      this.close();
+    });
   }
   onClose() { this.contentEl.empty(); }
 }
@@ -231,20 +255,21 @@ export class AutoLinkerSettingTab extends PluginSettingTab {
         toggle
           .setValue(this.plugin.settings.enableSemantic)
           .onChange(async (value) => {
-            const enable = async () => {
+            const enableWith = async (modelPath: string) => {
+              this.plugin.settings.semanticModelPath = modelPath;
               this.plugin.settings.enableSemantic = true;
               await this.plugin.saveSettings();
               await this.plugin.applySemantic();
               this.display();
             };
             if (value && !this.plugin.settings.enableSemantic) {
-              if (this.plugin.settings.semanticModelPath.trim()) {
-                // Own local model set → enable directly, no download, no modal.
-                await enable();
-              } else {
-                // No model yet → soft-block confirmation before downloading the default.
-                new SemanticEnableModal(this.app, enable, () => toggle.setValue(false)).open();
-              }
+              // Choose download-default vs use-local right here — no need to set a path first.
+              new SemanticEnableModal(this.app, {
+                initialPath: this.plugin.settings.semanticModelPath,
+                onDownload: () => void enableWith(""),
+                onUseLocal: (path) => void enableWith(path),
+                onCancel: () => toggle.setValue(false),
+              }).open();
             } else {
               this.plugin.settings.enableSemantic = value;
               await this.plugin.saveSettings();
@@ -256,7 +281,7 @@ export class AutoLinkerSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Local model path")
-      .setDesc("Optional. Point at your own local model to enable semantics without downloading the default. Set this before turning the toggle on.")
+      .setDesc("Optional. The model used for semantic linking — blank means the downloaded default. You can also set this when enabling the toggle.")
       .addText((txt) =>
         txt
           .setValue(this.plugin.settings.semanticModelPath)
