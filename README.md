@@ -1,6 +1,6 @@
 # Auto Linker
 
-**Surfaces the links you would have made by hand.** As you write, Auto Linker quietly underlines the words that match your other notes and offers a one‑click wiki‑link — ranked by a confidence score (not a blind text match), so you get the *useful* links and not the noise.
+**Surfaces the links you would have made by hand.** As you write, Auto Linker quietly underlines the words that match your other notes and offers a one‑click wiki‑link — ranked by a confidence score (not a blind text match), so you get to choose the *useful* links and not the noise.
 
 
 
@@ -8,7 +8,7 @@
 
 ## Why it's different
 
-Most "auto link" tools do a **binary** match: a word either equals a note title or it doesn't — which is why they happily suggest linking the word *"and"* to your `AND` note. Auto Linker instead computes a **confidence score in [0,1]** for every candidate and only shows the ones that clear a threshold you control. That score blends several signals:
+Auto Linker always suggests and never links on its own. It also remembers your decisions to improve its suggestions over time using a weighted model. Most "auto link" tools do a **binary** match: a word either equals a note title or it doesn't - Auto Linker instead computes a **confidence score** for every candidate and only shows the ones that clear a threshold you control. That score blends several signals:
 
 - **Lexical match** — how closely the text matches a note's title (exact, stemmed, or a close typo).
 - **Significance** — common words (*the, and, from*) score low; distinctive words score high. No hard stop‑word list; it's graded, and self‑tunes to your vault via IDF.
