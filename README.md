@@ -45,6 +45,8 @@ Use **Settings → "Index vault for semantics"** to pre‑compute every note's "
 
 > The semantic tier **re‑ranks** literal candidates — it refines what the text match already found. It does **not** discover links for text with no word in common with a note title (e.g. typing *"star wars"* won't surface a `Sci-Fi` note). Add an alias for that.
 
+> Semantic suggestions have a dotted underline.
+
 > Rule‑based stemming covers Latin/Cyrillic scripts; Semitic Hebrew/Arabic morphology is left to the multilingual embedding model rather than faked.
 
 ## Install
