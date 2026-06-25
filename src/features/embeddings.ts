@@ -78,13 +78,20 @@ export class TransformersEmbedder implements Embedder {
         tf.env.backends.onnx.wasm.wasmPaths =
           "https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2/dist/";
       }
+      let modelToLoad = this.model;
       if (this.localModelPath) {
+        // Own local model → never hit the network. Treat the path as
+        // <dir>/<model-folder>: load <model-folder> out of <dir>.
+        const norm  = this.localModelPath.replace(/\\/g, "/").replace(/\/+$/, "");
+        const slash = norm.lastIndexOf("/");
         tf.env.allowRemoteModels = false;
-        tf.env.localModelPath = this.localModelPath;
+        tf.env.allowLocalModels  = true;
+        tf.env.localModelPath = slash >= 0 ? norm.slice(0, slash) : ".";
+        modelToLoad = slash >= 0 ? norm.slice(slash + 1) : norm;
       } else {
         tf.env.allowRemoteModels = true;   // fetch + cache the default model once
       }
-      this.pipe = await tf.pipeline("feature-extraction", this.model);
+      this.pipe = await tf.pipeline("feature-extraction", modelToLoad);
       this.status = "ready";
       this.lastError = "";
       return true;

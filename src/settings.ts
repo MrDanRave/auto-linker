@@ -52,6 +52,12 @@ class SemanticEnableModal extends Modal {
         "by meaning. The model (" + DEFAULT_MODEL + ", ~50 MB) is downloaded once, then " +
         "stored locally and used fully offline — no note content ever leaves your device.",
     });
+    contentEl.createEl("p", {
+      cls: "auto-linker-settings-desc",
+      text:
+        "Already have a model? Cancel, set \"Local model path\" below to your own model, " +
+        "then enable again — nothing will be downloaded.",
+    });
     const row = contentEl.createEl("div", { cls: "modal-button-container" });
     const cancel = row.createEl("button", { text: "Cancel" });
     const ok = row.createEl("button", { text: "Download & enable", cls: "mod-cta" });
@@ -102,7 +108,7 @@ export class AutoLinkerSettingTab extends PluginSettingTab {
       .setName("Suggestion sensitivity")
       .setDesc(
         "Higher = more suggestions, including weaker matches. " +
-        "Lower = only confident matches."
+        `Lower = only confident matches. Default: ${SCORING.threshold}.`
       )
       .addSlider((slider) =>
         slider
@@ -113,6 +119,17 @@ export class AutoLinkerSettingTab extends PluginSettingTab {
             this.plugin.settings.sensitivity = value;
             await this.plugin.saveSettings();
             this.plugin.rescanActiveEditor();
+          })
+      )
+      .addExtraButton((btn) =>
+        btn
+          .setIcon("rotate-ccw")
+          .setTooltip(`Restore default (${SCORING.threshold})`)
+          .onClick(async () => {
+            this.plugin.settings.sensitivity = SCORING.threshold;
+            await this.plugin.saveSettings();
+            this.plugin.rescanActiveEditor();
+            this.display();
           })
       );
 
@@ -154,7 +171,6 @@ export class AutoLinkerSettingTab extends PluginSettingTab {
         .setButtonText("Restore default weights")
         .onClick(async () => {
           this.plugin.settings.weights = { ...DEFAULT_WEIGHTS };
-          this.plugin.settings.sensitivity = SCORING.threshold;
           await this.plugin.saveSettings();
           this.plugin.applyWeights();
           this.display();
@@ -215,18 +231,20 @@ export class AutoLinkerSettingTab extends PluginSettingTab {
         toggle
           .setValue(this.plugin.settings.enableSemantic)
           .onChange(async (value) => {
+            const enable = async () => {
+              this.plugin.settings.enableSemantic = true;
+              await this.plugin.saveSettings();
+              await this.plugin.applySemantic();
+              this.display();
+            };
             if (value && !this.plugin.settings.enableSemantic) {
-              // First enable → soft-block confirmation before any download.
-              new SemanticEnableModal(
-                this.app,
-                async () => {
-                  this.plugin.settings.enableSemantic = true;
-                  await this.plugin.saveSettings();
-                  await this.plugin.applySemantic();
-                  this.display();
-                },
-                () => { toggle.setValue(false); },   // revert
-              ).open();
+              if (this.plugin.settings.semanticModelPath.trim()) {
+                // Own local model set → enable directly, no download, no modal.
+                await enable();
+              } else {
+                // No model yet → soft-block confirmation before downloading the default.
+                new SemanticEnableModal(this.app, enable, () => toggle.setValue(false)).open();
+              }
             } else {
               this.plugin.settings.enableSemantic = value;
               await this.plugin.saveSettings();
@@ -238,7 +256,7 @@ export class AutoLinkerSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Local model path")
-      .setDesc("Optional. Point at your own local model.")
+      .setDesc("Optional. Point at your own local model to enable semantics without downloading the default. Set this before turning the toggle on.")
       .addText((txt) =>
         txt
           .setValue(this.plugin.settings.semanticModelPath)
