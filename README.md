@@ -1,8 +1,8 @@
 # Auto Linker
 
-**Surfaces the links you'd have made by hand.** As you write, Auto Linker quietly underlines the words that match your other notes and offers a one‑click wiki‑link — ranked by a confidence score, not a blind text match, so you get the *useful* links and not the noise.
+**Surfaces the links you would have made by hand.** As you write, Auto Linker quietly underlines the words that match your other notes and offers a one‑click wiki‑link — ranked by a confidence score (not a blind text match), so you get the *useful* links and not the noise.
 
-![demo](demo.gif)
+
 
 ---
 
@@ -12,21 +12,19 @@ Most "auto link" tools do a **binary** match: a word either equals a note title 
 
 - **Lexical match** — how closely the text matches a note's title (exact, stemmed, or a close typo).
 - **Significance** — common words (*the, and, from*) score low; distinctive words score high. No hard stop‑word list; it's graded, and self‑tunes to your vault via IDF.
-- **Capitalization** — `AND` (the SQL keyword) reads differently from *"and"*; ALL‑CAPS / TitleCase get a boost, lowercase function words a penalty.
-- **Note importance** — well‑linked "hub" notes (PageRank over your link graph) rank higher.
-- **Semantic meaning** *(optional, local)* — an on‑device embedding model re‑ranks candidates by meaning.
+- **Capitalization** — `AND` reads differently from `and`; ALL‑CAPS / TitleCase get a boost, lowercase function words a penalty.
+- **Note importance** — well‑linked "hub" notes rank higher (PageRank over your link graph).
+- **Semantic meaning** *(optional)* — an on‑device embedding model re‑ranks candidates by meaning.
 - **Learned preference** — it learns from the links you actually make and the suggestions you accept.
-
-The result: typing *"my database layer"* suggests `Database`, but *"x and y"* doesn't suggest `AND` — without you maintaining a stop‑word list.
 
 ## Features
 
-- **Scored, ranked suggestions** with a single **Sensitivity** dial (more vs. only‑confident).
+- **Scored, ranked suggestions** with a single sensitivity dial controlling suggestion noise.
 - **Per‑signal weight sliders** — tune the balance yourself; restore defaults anytime.
 - **Smart tokenizer** — handles `802.1Q`, `Topic : Subtopic`, `client-server`, and path‑like titles via configurable separator rules.
 - **Typo tolerance** — `databse` still finds `Database`; bounded so it stays quiet.
 - **Multi‑word titles & aliases**, including a distinctive word standing in for the whole (`kruger` → `Dunning‑Kruger`).
-- **Learned aliases** — link `[[Valuable|value]]` once and *value* starts suggesting `Valuable` thereafter.
+- **Learned aliases** — link `[[Dinosaur|raptor]]` once and *raptor* can suggest `Dinosaur` thereafter, given a confident score.
 - **Reject memory** — dismiss a suggestion per‑note or vault‑wide; manage them in settings.
 - **Hover to preview** the target note, approve (✓), or reject (✗) inline.
 - **Skips** `[[existing links]]`, `#tags`, inline `` `code` `` and ```` ``` fenced blocks ````.
@@ -45,9 +43,9 @@ Turning on **Semantic meaning** loads a small embedding model that re‑ranks su
 
 Use **Settings → "Index vault for semantics"** to pre‑compute every note's "meaning fingerprint" so meaning‑based ranking is ready across the whole vault immediately.
 
-> The semantic tier **re‑ranks** literal candidates — it refines what the text match already found. It does **not** discover links for text with no word in common with a note title (e.g. typing *"velociraptor"* won't surface a `Dinosaur` note). Add an alias for that.
+> The semantic tier **re‑ranks** literal candidates — it refines what the text match already found. It does **not** discover links for text with no word in common with a note title (e.g. typing *"star wars"* won't surface a `Sci-Fi` note). Add an alias for that.
 
-> Rule‑based stemming covers Latin/Cyrillic scripts; Hebrew/Arabic morphology is left to the multilingual embedding model rather than faked.
+> Rule‑based stemming covers Latin/Cyrillic scripts; Semitic Hebrew/Arabic morphology is left to the multilingual embedding model rather than faked.
 
 ## Install
 
