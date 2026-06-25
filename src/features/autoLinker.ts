@@ -491,8 +491,9 @@ export function scoreRegion(
     }
   }
 
-  // Score each candidate.
-  const scored: ScoredSuggestion[] = [];
+  // ── Pass 1: score every candidate — base (non-semantic) and full confidence ──
+  interface Pre { c: Cand; baseConf: number; fullConf: number; }
+  const pre: Pre[] = [];
   for (const c of cands) {
     const blockedVault = rejectSet.has(rejectKey(c.span, c.targetPath, null));
     const blockedNote  = rejectSet.has(rejectKey(c.span, c.targetPath, activeFilePath));
@@ -501,8 +502,8 @@ export function scoreRegion(
     const sig = significanceOf(c.tokIdxs);
     const cse = caseOf(c.from, c.to, c.tokIdxs);
 
-    // Base confidence = weighted sum renormalized over the non-semantic signals
-    // available for THIS candidate (lex/sig/case always; graph & accept when present).
+    // Base confidence = weighted sum over the non-semantic signals (lex/sig/case
+    // always; graph & accept when present), renormalized.
     let wBase = W.lex + W.sig + W.case;
     let nBase = W.lex * c.lexScore + W.sig * sig + W.case * cse;
     if (graphScorer) { wBase += W.graph; nBase += W.graph * graphScorer.getScore(c.targetPath); }
@@ -512,27 +513,41 @@ export function scoreRegion(
     }
     const baseConf = nBase / wBase;
 
-    // Semantics re-ranks: fold it in, and mark "semantic" only when it was the
-    // deciding lift (base alone wouldn't have crossed the threshold).
-    let confidence = baseConf;
-    let matchType: MatchType = "literal";
+    let fullConf = baseConf;
     if (semScore) {
       const sv = semScore(c.from, c.to, c.targetPath);
-      if (sv != null) {
-        confidence = (nBase + W.sem * sv) / (wBase + W.sem);
-        if (baseConf < threshold && confidence >= threshold) matchType = "semantic";
+      if (sv != null) fullConf = (nBase + W.sem * sv) / (wBase + W.sem);
+    }
+    pre.push({ c, baseConf, fullConf });
+  }
+
+  // ── Pass 2: keep suggestible candidates; mark "semantic" when meaning decided
+  // the outcome — either it crossed the threshold that text alone couldn't, OR an
+  // overlapping different-target candidate was as strong (or stronger) on text
+  // alone, so meaning is what flipped/held the winner. ──
+  const overlaps = (a: Cand, b: Cand) => a.from < b.to && a.to > b.from;
+  const scored: ScoredSuggestion[] = [];
+  for (const p of pre) {
+    if (p.fullConf < threshold) continue;
+    let matchType: MatchType = "literal";
+    if (p.baseConf < threshold) {
+      matchType = "semantic";
+    } else {
+      for (const q of pre) {
+        if (q.c.targetPath !== p.c.targetPath && overlaps(q.c, p.c) && q.baseConf >= p.baseConf) {
+          matchType = "semantic";
+          break;
+        }
       }
     }
-    if (confidence < threshold) continue;
-
     scored.push({
-      id: `${c.targetPath}::${regionFrom + c.from}::${regionFrom + c.to}`,
-      from: regionFrom + c.from,
-      to:   regionFrom + c.to,
-      span: c.span,
-      targetPath: c.targetPath,
-      targetName: targetNameOf(c.targetPath),
-      confidence,
+      id: `${p.c.targetPath}::${regionFrom + p.c.from}::${regionFrom + p.c.to}`,
+      from: regionFrom + p.c.from,
+      to:   regionFrom + p.c.to,
+      span: p.c.span,
+      targetPath: p.c.targetPath,
+      targetName: targetNameOf(p.c.targetPath),
+      confidence: p.fullConf,
       matchType,
     });
   }
