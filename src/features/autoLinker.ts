@@ -583,6 +583,10 @@ function dedupe(
         prev.to   = Math.max(prev.to, s.to);
         prev.span = text.slice(prev.from - regionFrom, prev.to - regionFrom);
         prev.confidence = Math.min(1, Math.max(prev.confidence, s.confidence) + MERGE_BONUS);
+        // A merged span backed by ANY literal anchor is literal — text decided it,
+        // even if one part on its own was meaning-lifted. Only an all-semantic
+        // merge stays semantic (dotted).
+        if (s.matchType === "literal" || prev.matchType === "literal") prev.matchType = "literal";
         prev.id = `${prev.targetPath}::${prev.from}::${prev.to}`;
         continue;
       }

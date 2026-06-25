@@ -1,7 +1,7 @@
 {
   "id": "auto-linker",
   "name": "Auto Linker",
-  "version": "1.5.8",
+  "version": "1.5.9",
   "minAppVersion": "1.4.0",
   "description": "Semantic auto-linking: underlines text that matches a note title and offers one-click wiki-link insertion.",
   "author": "MrDanRave",
