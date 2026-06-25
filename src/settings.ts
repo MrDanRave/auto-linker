@@ -118,6 +118,13 @@ export class AutoLinkerSettingTab extends PluginSettingTab {
 
     // ── Signal weights ────────────────────────────────────────────────────
     new Setting(containerEl).setName("Signal weights").setHeading();
+    containerEl.createEl("p", {
+      cls: "auto-linker-settings-desc",
+      text:
+        "Each suggestion's confidence is a blend of these signals. Raising a slider " +
+        "makes that factor count for more relative to the others, changing which links " +
+        "get suggested. The values are relative — they don't need to add up to anything.",
+    });
 
     const weightSlider = (name: string, desc: string, key: keyof ScoringWeights) =>
       new Setting(containerEl)
@@ -136,7 +143,7 @@ export class AutoLinkerSettingTab extends PluginSettingTab {
         );
 
     weightSlider("Lexical match", "How closely the text matches a note title.", "lex");
-    weightSlider("Significance", "Down-weights common words (the, and, from).", "sig");
+    weightSlider("Significance", "Higher = suggest only distinctive words; lower = allow common words (the, and, from) too.", "sig");
     weightSlider("Capitalization", "Treats ALL-CAPS / Capitalized words as more link-worthy.", "case");
     weightSlider("Note importance", "Favors well-linked notes (backlinks / PageRank).", "graph");
     weightSlider("Semantic meaning", "Match by meaning — needs the semantic tier enabled.", "sem");
@@ -235,7 +242,7 @@ export class AutoLinkerSettingTab extends PluginSettingTab {
       .addText((txt) =>
         txt
           .setValue(this.plugin.settings.semanticModelPath)
-          .setPlaceholder("(download default)")
+          .setPlaceholder("/path/to/your/model")
           .onChange(async (value) => {
             this.plugin.settings.semanticModelPath = value;
             await this.plugin.saveSettings();
@@ -245,7 +252,12 @@ export class AutoLinkerSettingTab extends PluginSettingTab {
     let indexing = false;
     new Setting(containerEl)
       .setName("Index vault for semantics")
-      .setDesc("Pre-compute embeddings for every note so meaning-based ranking is ready immediately.")
+      .setDesc(
+        "Semantic matching compares the meaning of your text to each note, which needs a " +
+        "one-time 'meaning fingerprint' of every note. These are normally built gradually " +
+        "as you open notes — run this once to build them for the whole vault now, so " +
+        "meaning-based suggestions work everywhere immediately.",
+      )
       .addButton((btn) =>
         btn.setButtonText("Index vault").onClick(async () => {
           if (!this.plugin.settings.enableSemantic) { new Notice("Enable semantic linking first."); return; }
