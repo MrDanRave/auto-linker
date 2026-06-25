@@ -556,7 +556,7 @@ export function scoreRegion(
     });
   }
 
-  return dedupe(scored, text, regionFrom);
+  return dedupe(scored, text, regionFrom, graphScorer ? (p) => graphScorer.getScore(p) : undefined);
 }
 
 /**
@@ -564,7 +564,12 @@ export function scoreRegion(
  *   (b) MERGE adjacent same-target spans separated only by non-content → one span, +bonus.
  *   (a/c) OVERLAP: keep the highest-confidence span; suppress any overlapping (incl. contained) span.
  */
-function dedupe(scored: ScoredSuggestion[], text: string, regionFrom: number): ScoredSuggestion[] {
+function dedupe(
+  scored: ScoredSuggestion[],
+  text: string,
+  regionFrom: number,
+  tieBreak?: (targetPath: string) => number,
+): ScoredSuggestion[] {
   if (scored.length <= 1) return scored;
 
   // (b) Merge corroborating adjacent anchors of the same target.
@@ -585,8 +590,16 @@ function dedupe(scored: ScoredSuggestion[], text: string, regionFrom: number): S
     merged.push({ ...s });
   }
 
-  // (a/c) Overlap resolution — highest confidence wins; ties prefer the longer span.
-  merged.sort((a, b) => b.confidence - a.confidence || (b.to - b.from) - (a.to - a.from));
+  // (a/c) Overlap resolution — highest confidence wins; then the longer span; then
+  // (the chosen tie-break) the more important note by backlinks/PageRank; then a
+  // stable path order so an otherwise-equal tie is deterministic, not random.
+  const imp = (p: string) => (tieBreak ? tieBreak(p) : 0);
+  merged.sort((a, b) =>
+    b.confidence - a.confidence ||
+    (b.to - b.from) - (a.to - a.from) ||
+    imp(b.targetPath) - imp(a.targetPath) ||
+    a.targetPath.localeCompare(b.targetPath)
+  );
   const kept: ScoredSuggestion[] = [];
   const used: Array<[number, number]> = [];
   for (const s of merged) {
