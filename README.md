@@ -4,7 +4,7 @@
 
 <img width="665" height="527" alt="Screen Recording 2026-06-25 135225" src="https://github.com/user-attachments/assets/01e2187e-86a2-4f8c-8fc6-e149f9f964ec" />
 
-
+> This software was vibe-coded
 ---
 
 ## Why it's different
