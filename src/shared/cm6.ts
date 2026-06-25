@@ -230,7 +230,7 @@ function makeTooltipForId(
           peek.classList.toggle("auto-linker-peek--above", above);
 
           // Kink points back at the eye even after horizontal clamping
-          const kink = peek.querySelector(".auto-linker-peek-kink") as HTMLElement | null;
+          const kink = peek.querySelector<HTMLElement>(".auto-linker-peek-kink");
           if (kink) kink.style.left = `${Math.max(12, Math.min(eyeCenterX - left, pw - 12))}px`;
         };
 
@@ -314,7 +314,7 @@ export function createSuggestionTooltip(field: SuggestionField, callbacks: Widge
 
         if (target.closest(".auto-linker-tooltip") || target.closest(".auto-linker-peek")) { this.cancelHide(); return; }
 
-        const mark    = target.closest(".auto-linker-suggestion") as HTMLElement | null;
+        const mark    = target.closest<HTMLElement>(".auto-linker-suggestion");
         const id      = mark?.getAttribute("data-deco-id") ?? null;
         const current = this.view.state.field(hoveredField, false) ?? null;
 

@@ -312,7 +312,7 @@ export class TitleIndex {
   addFile(file: TFile) {
     this.index.set(file.basename.toLowerCase(), file.path);
     const cache   = this.app.metadataCache.getFileCache(file);
-    const aliases = cache?.frontmatter?.["aliases"];
+    const aliases: unknown = cache?.frontmatter?.["aliases"];
     const names   = [file.basename];
     if (Array.isArray(aliases)) {
       for (const alias of aliases) {
@@ -685,7 +685,8 @@ export class AutoLinker {
     try {
       const adapter = this.app.vault.adapter;
       if (await adapter.exists(this.embeddingsPath)) {
-        this.semantic.load(JSON.parse(await adapter.read(this.embeddingsPath)));
+        const raw = JSON.parse(await adapter.read(this.embeddingsPath)) as Record<string, { mtime: number; vec: number[] }>;
+        this.semantic.load(raw);
       }
     } catch { /* corrupt/missing cache → start fresh */ }
   }
@@ -709,7 +710,7 @@ export class AutoLinker {
   }
 
   async load(loadData: () => Promise<Record<string, unknown> | null>) {
-    const data  = (await loadData()) as Record<string, PersistedState> | null;
+    const data  = await loadData();
     const saved = data?.[this.DATA_KEY] as PersistedState | undefined;
     // Migrate legacy entries: no notePath → vault-bound; no matchType → literal.
     this.rejectList = (saved?.rejectList ?? []).map((r) => ({
@@ -746,7 +747,7 @@ export class AutoLinker {
     loadData: () => Promise<Record<string, unknown> | null>,
     saveData: (d: unknown) => Promise<void>
   ) {
-    const existing = ((await loadData()) ?? {}) as Record<string, unknown>;
+    const existing: Record<string, unknown> = (await loadData()) ?? {};
     const learnedAliases: LearnedAlias[] = [];
     for (const [targetPath, surfaces] of this.learnedAliases)
       for (const surface of surfaces) learnedAliases.push({ surface, targetPath });
@@ -1214,7 +1215,7 @@ export function buildAutoLinkerExtensions(
 
     onOpen: (targetPath: string) => {
       const file = app.vault.getAbstractFileByPath(targetPath);
-      if (file instanceof TFile) app.workspace.getLeaf(false).openFile(file);
+      if (file instanceof TFile) void app.workspace.getLeaf(false).openFile(file);
     },
   };
 

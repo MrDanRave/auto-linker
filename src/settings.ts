@@ -205,7 +205,7 @@ export class AutoLinkerSettingTab extends PluginSettingTab {
       .addButton((btn) =>
         btn
           .setButtonText("Forget")
-          .setWarning()
+          .setDestructive()
           .onClick(async () => {
             const linker = this.plugin.autoLinker;
             if (!linker) return;
@@ -269,10 +269,16 @@ export class AutoLinkerSettingTab extends PluginSettingTab {
       .addToggle((toggle) =>
         toggle
           .setValue(this.plugin.settings.enableSemantic)
-          .onChange(async (value) => {
-            const enableWith = async (modelPath: string) => {
+          .onChange((value) => {
+            const apply = async (modelPath: string) => {
               this.plugin.settings.semanticModelPath = modelPath;
               this.plugin.settings.enableSemantic = true;
+              await this.plugin.saveSettings();
+              await this.plugin.applySemantic();
+              this.display();
+            };
+            const disable = async () => {
+              this.plugin.settings.enableSemantic = false;
               await this.plugin.saveSettings();
               await this.plugin.applySemantic();
               this.display();
@@ -281,15 +287,12 @@ export class AutoLinkerSettingTab extends PluginSettingTab {
               // Choose download-default vs use-local right here — no need to set a path first.
               new SemanticEnableModal(this.app, {
                 initialPath: this.plugin.settings.semanticModelPath,
-                onDownload: () => void enableWith(""),
-                onUseLocal: (path) => void enableWith(path),
+                onDownload: () => void apply(""),
+                onUseLocal: (path) => void apply(path),
                 onCancel: () => toggle.setValue(false),
               }).open();
-            } else {
-              this.plugin.settings.enableSemantic = value;
-              await this.plugin.saveSettings();
-              await this.plugin.applySemantic();
-              this.display();
+            } else if (!value) {
+              void disable();
             }
           }),
       );
@@ -420,13 +423,13 @@ export class AutoLinkerSettingTab extends PluginSettingTab {
     btn.setAttribute("aria-label", scope === "vault"
       ? "Restore all vault-wide rejections"
       : "Restore all note-specific rejections");
-    btn.addEventListener("click", async (e) => {
+    btn.addEventListener("click", (e) => {
       e.preventDefault();   // don't toggle the <details>
       e.stopPropagation();
       const linker = this.plugin.autoLinker;
       if (!linker) return;
       linker.restoreAllRejects(scope);
-      await this.plugin.persistAutoLinker();
+      void this.plugin.persistAutoLinker();
       this.plugin.rescanActiveEditor();
       this.display();
     });
