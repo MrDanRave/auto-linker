@@ -78,6 +78,12 @@ export default class AutoLinkerPlugin extends Plugin {
     }
   }
 
+  /** Pre-compute embeddings for the whole vault (settings button). */
+  async indexVaultForSemantics(onProgress?: (done: number, total: number) => void) {
+    if (!this.autoLinker) return { done: 0, total: 0, ok: false };
+    return this.autoLinker.indexVaultForSemantics(onProgress);
+  }
+
   /** Re-apply signal weights from settings, then rescan. */
   applyWeights() {
     if (!this.autoLinker) return;

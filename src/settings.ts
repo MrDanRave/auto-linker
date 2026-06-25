@@ -1,4 +1,4 @@
-import { App, Modal, PluginSettingTab, Setting } from "obsidian";
+import { App, Modal, Notice, PluginSettingTab, Setting } from "obsidian";
 import type AutoLinkerPlugin from "./main";
 import { BucketConfig, DEFAULT_BUCKETS } from "./features/nlp";
 import { DEFAULT_MODEL } from "./features/embeddings";
@@ -67,6 +67,7 @@ interface RejectRow {
   targetName: string;
   notePath: string | null;
   noteName: string | null;
+  matchType: "literal" | "semantic";
 }
 
 export class AutoLinkerSettingTab extends PluginSettingTab {
@@ -241,6 +242,27 @@ export class AutoLinkerSettingTab extends PluginSettingTab {
           }),
       );
 
+    let indexing = false;
+    new Setting(containerEl)
+      .setName("Index vault for semantics")
+      .setDesc("Pre-compute embeddings for every note so meaning-based ranking is ready immediately.")
+      .addButton((btn) =>
+        btn.setButtonText("Index vault").onClick(async () => {
+          if (!this.plugin.settings.enableSemantic) { new Notice("Enable semantic linking first."); return; }
+          if (indexing) return;
+          indexing = true;
+          btn.setButtonText("Indexing…").setDisabled(true);
+          const progress = new Notice("Indexing vault for semantics…", 0);
+          const res = await this.plugin.indexVaultForSemantics((done, total) =>
+            progress.setMessage(`Indexing vault for semantics… ${done}/${total}`),
+          );
+          progress.hide();
+          new Notice(res.ok ? `Indexed ${res.done}/${res.total} notes.` : "Semantic model isn't ready yet.");
+          indexing = false;
+          btn.setButtonText("Index vault").setDisabled(false);
+        }),
+      );
+
     // ── Rejected suggestions browser ─────────────────────────────────────
     const linker = this.plugin.autoLinker;
     if (!linker) return;
@@ -251,12 +273,20 @@ export class AutoLinkerSettingTab extends PluginSettingTab {
     const vaultRejects = all.filter((r) => r.notePath === null);
     const noteRejects  = all.filter((r) => r.notePath !== null);
 
-    // Vault Rejections — flat list under one dropdown
-    const vaultDetails = this.makeDetails(containerEl, "vault", `Vault Rejections (${vaultRejects.length})`, false);
+    // Vault Rejections — split into literal / semantic sub-groups
+    const vaultDetails = this.makeDetails(containerEl, "vault", `Vault Rejections (${vaultRejects.length})`, true);
     if (vaultRejects.length === 0) {
       vaultDetails.createEl("p", { cls: "auto-linker-settings-empty", text: "None." });
     } else {
-      for (const entry of vaultRejects) this.renderRow(vaultDetails, entry);
+      const literal  = vaultRejects.filter((r) => r.matchType !== "semantic");
+      const semantic = vaultRejects.filter((r) => r.matchType === "semantic");
+      const sub = (key: string, label: string, rows: RejectRow[]) => {
+        if (!rows.length) return;
+        const d = this.makeDetails(vaultDetails, `vault:${key}`, `${label} (${rows.length})`, false, true);
+        for (const entry of rows) this.renderRow(d, entry);
+      };
+      sub("literal", "Literal (text)", literal);
+      sub("semantic", "Semantic (meaning)", semantic);
     }
 
     // Note Rejections — one submenu per origin note

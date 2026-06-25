@@ -33,9 +33,12 @@ export interface Suggestion {
   targetName: string;
 }
 
+export type MatchType = "literal" | "semantic";
+
 export interface ScoredSuggestion extends Suggestion {
   confidence: number;
-  matchType: "literal";
+  /** "semantic" = this only crossed the threshold because the meaning signal lifted it. */
+  matchType: MatchType;
 }
 
 export type ScoringWeights = { lex: number; sig: number; case: number; graph: number; sem: number; accept: number };
@@ -79,6 +82,10 @@ interface RejectEntry {
   span: string;
   targetPath: string;
   notePath: string | null;
+  /** How the rejected suggestion was surfaced (for display/grouping only —
+   *  NOT part of the reject identity, so a reject suppresses span→target
+   *  regardless of provenance and can't quietly resurface via the other type). */
+  matchType?: MatchType;
 }
 
 interface LearnedAlias {
@@ -100,6 +107,7 @@ interface StagedReject {
   targetName: string;
   notePath: string;   // origin note (where the X was clicked)
   noteName: string;
+  matchType: MatchType;
 }
 
 const VAULT = "*"; // key token for vault-bound entries
@@ -493,20 +501,28 @@ export function scoreRegion(
     const sig = significanceOf(c.tokIdxs);
     const cse = caseOf(c.from, c.to, c.tokIdxs);
 
-    // Confidence = weighted sum renormalized over the signals available for THIS
-    // candidate (graph when a scorer exists; sem only when its vectors are cached).
-    let wsum = W.lex + W.sig + W.case;
-    let num  = W.lex * c.lexScore + W.sig * sig + W.case * cse;
-    if (graphScorer) { wsum += W.graph; num += W.graph * graphScorer.getScore(c.targetPath); }
-    if (semScore) {
-      const sv = semScore(c.from, c.to, c.targetPath);
-      if (sv != null) { wsum += W.sem; num += W.sem * sv; }
-    }
+    // Base confidence = weighted sum renormalized over the non-semantic signals
+    // available for THIS candidate (lex/sig/case always; graph & accept when present).
+    let wBase = W.lex + W.sig + W.case;
+    let nBase = W.lex * c.lexScore + W.sig * sig + W.case * cse;
+    if (graphScorer) { wBase += W.graph; nBase += W.graph * graphScorer.getScore(c.targetPath); }
     if (acceptScore) {
       const av = acceptScore(c.stemKey, c.targetPath);
-      if (av != null) { wsum += W.accept; num += W.accept * av; }
+      if (av != null) { wBase += W.accept; nBase += W.accept * av; }
     }
-    const confidence = num / wsum;
+    const baseConf = nBase / wBase;
+
+    // Semantics re-ranks: fold it in, and mark "semantic" only when it was the
+    // deciding lift (base alone wouldn't have crossed the threshold).
+    let confidence = baseConf;
+    let matchType: MatchType = "literal";
+    if (semScore) {
+      const sv = semScore(c.from, c.to, c.targetPath);
+      if (sv != null) {
+        confidence = (nBase + W.sem * sv) / (wBase + W.sem);
+        if (baseConf < threshold && confidence >= threshold) matchType = "semantic";
+      }
+    }
     if (confidence < threshold) continue;
 
     scored.push({
@@ -517,7 +533,7 @@ export function scoreRegion(
       targetPath: c.targetPath,
       targetName: targetNameOf(c.targetPath),
       confidence,
-      matchType: "literal",
+      matchType,
     });
   }
 
@@ -659,11 +675,12 @@ export class AutoLinker {
   async load(loadData: () => Promise<Record<string, unknown> | null>) {
     const data  = (await loadData()) as Record<string, PersistedState> | null;
     const saved = data?.[this.DATA_KEY] as PersistedState | undefined;
-    // Migrate any legacy entries (no notePath field) → treat as vault-bound.
+    // Migrate legacy entries: no notePath → vault-bound; no matchType → literal.
     this.rejectList = (saved?.rejectList ?? []).map((r) => ({
       span: r.span,
       targetPath: r.targetPath,
       notePath: r.notePath ?? null,
+      matchType: r.matchType ?? "literal",
     }));
 
     this.learnedAliases.clear();
@@ -830,6 +847,24 @@ export class AutoLinker {
     return `${file.basename}\n${content.split(/\s+/).slice(0, 200).join(" ")}`;
   }
 
+  /** Pre-embed every note's vector (settings button). No-op unless semantics is ready. */
+  async indexVaultForSemantics(
+    onProgress?: (done: number, total: number) => void
+  ): Promise<{ done: number; total: number; ok: boolean }> {
+    const si = this.semantic;
+    if (!this.enableSemantic || !si || !si.isReady()) return { done: 0, total: 0, ok: false };
+    const files = this.app.vault.getMarkdownFiles();
+    let done = 0;
+    for (const f of files) {
+      const body = await this.noteEmbedText(f);
+      await si.warmNote(f.path, f.stat.mtime, body);
+      onProgress?.(++done, files.length);
+    }
+    this.scheduleSaveEmbeddings();
+    this.rescanCb?.();
+    return { done, total: files.length, ok: true };
+  }
+
   destroy() {
     this.graphScorer.destroy();
     if (this.embSaveTimer) clearTimeout(this.embSaveTimer);
@@ -844,18 +879,18 @@ export class AutoLinker {
   }
 
   /** ✗ button: reject (span→target) for this note only. Persisted. */
-  noteReject(span: string, targetPath: string, notePath: string) {
+  noteReject(span: string, targetPath: string, notePath: string, matchType: MatchType = "literal") {
     if (!this.has(span, targetPath, notePath)) {
-      this.rejectList.push({ span, targetPath, notePath });
+      this.rejectList.push({ span, targetPath, notePath, matchType });
     }
   }
 
   /** Panel "Yes": promote to vault-bound — drop any note-bound copies first. */
-  vaultReject(span: string, targetPath: string) {
+  vaultReject(span: string, targetPath: string, matchType: MatchType = "literal") {
     this.rejectList = this.rejectList.filter(
       (r) => !(r.span === span && r.targetPath === targetPath)
     );
-    this.rejectList.push({ span, targetPath, notePath: null });
+    this.rejectList.push({ span, targetPath, notePath: null, matchType });
   }
 
   /** Panel "↩" Restore: remove the note-bound rejection so it can reappear. */
@@ -886,6 +921,7 @@ export class AutoLinker {
     targetName: string;
     notePath: string | null;
     noteName: string | null;
+    matchType: MatchType;
   }> {
     return this.rejectList.map((r) => ({
       span: r.span,
@@ -895,6 +931,7 @@ export class AutoLinker {
       noteName: r.notePath
         ? (r.notePath.split("/").pop()?.replace(/\.md$/, "") ?? r.notePath)
         : null,
+      matchType: r.matchType ?? "literal",
     }));
   }
 
@@ -1000,7 +1037,7 @@ export class RejectStagingPanel {
 
   /** Yes → escalate this note-bound reject to vault-bound. */
   private confirmItem(item: StagedReject) {
-    this.linker.vaultReject(item.span, item.targetPath);
+    this.linker.vaultReject(item.span, item.targetPath, item.matchType);
     this.persistFn();
     this.drop(item);
   }
@@ -1019,7 +1056,7 @@ export class RejectStagingPanel {
   }
 
   private confirmAll() {
-    for (const item of this.items) this.linker.vaultReject(item.span, item.targetPath);
+    for (const item of this.items) this.linker.vaultReject(item.span, item.targetPath, item.matchType);
     this.persistFn();
     this.items = [];
     this.hide();
@@ -1099,12 +1136,13 @@ export function buildAutoLinkerExtensions(
     onReject: (meta: DecorationMeta) => {
       const view = (app.workspace.activeEditor?.editor as any)?.cm as EditorView | undefined;
       if (!view) return;
-      const data = meta.data as { span: string; targetPath: string; targetName: string };
+      const data = meta.data as { span: string; targetPath: string; targetName: string; matchType?: MatchType };
+      const matchType: MatchType = data.matchType ?? "literal";
       const activeFile = app.workspace.getActiveFile();
       const notePath = activeFile?.path ?? "";
 
       // Note-bound reject, persisted immediately (survives reload, scoped to this note)
-      linker.noteReject(data.span, data.targetPath, notePath);
+      linker.noteReject(data.span, data.targetPath, notePath, matchType);
       persistFn();
 
       // Remove all underlines for this span/target in the current note
@@ -1117,6 +1155,7 @@ export function buildAutoLinkerExtensions(
         targetName: data.targetName,
         notePath,
         noteName: activeFile?.basename ?? "Unknown",
+        matchType,
       });
     },
 
@@ -1141,7 +1180,7 @@ export function buildAutoLinkerExtensions(
     for (const s of suggestions) {
       effects.push(addDecoEffect.of({
         id: s.id, from: s.from, to: s.to,
-        data: { span: s.span, targetName: s.targetName, targetPath: s.targetPath },
+        data: { span: s.span, targetName: s.targetName, targetPath: s.targetPath, matchType: s.matchType },
       }));
     }
     view.dispatch({ effects });

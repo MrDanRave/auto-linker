@@ -460,9 +460,20 @@ network traffic (verify in devtools).
 > weights". Weights persist in settings, thread through `AutoLinker.setWeights` →
 > `scoreRegion` (relative, renormalized — so the slider scale and the 0–1 `SCORING`
 > defaults are interchangeable), and re-scan live on change.
-> **Remaining:** `matchType: 'literal' | 'semantic'` provenance + `RejectEntry` migration;
-> reject-browser literal/semantic grouping; the "Index vault for semantics" button.
-> Time-decay on acceptance is deferred.
+>
+> **(v1.5.2) Phase 7 complete — provenance + remaining UI:**
+> - `matchType: 'literal' | 'semantic'` on `ScoredSuggestion`. "semantic" means meaning
+>   was the deciding lift (the base, non-sem confidence wouldn't have crossed the
+>   threshold). Semantic suggestions get a **dotted** underline (literal = solid).
+> - `RejectEntry` gains `matchType` (migrated → 'literal'); it is recorded/displayed but
+>   **NOT** part of the reject identity, so a reject suppresses span→target regardless of
+>   provenance and can't quietly resurface via the other type. Reject browser groups vault
+>   rejections into Literal / Semantic.
+> - "Index vault for semantics" button (progress Notice; no-op with a Notice when the tier
+>   isn't ready).
+> Time-decay on acceptance remains the one deliberately deferred item.
+
+**Phase 7 is COMPLETE as of v1.5.2.** (Acceptance time-decay deferred by design.)
 
 **Goal:** add the **learned preference** signal, finalize fusion, thread match
 provenance, and build out the full settings UI.

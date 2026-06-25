@@ -114,10 +114,11 @@ export function createDecoField(): SuggestionField {
         } else if (effect.is(addDecoEffect)) {
           const meta = effect.value;
           updated = updated.filter((s) => s.meta.id !== meta.id);
+          const semantic = (meta.data as { matchType?: string } | undefined)?.matchType === "semantic";
           updated.push({
             meta,
             mark: Decoration.mark({
-              class: "auto-linker-suggestion",
+              class: semantic ? "auto-linker-suggestion auto-linker-suggestion--semantic" : "auto-linker-suggestion",
               attributes: { "data-deco-id": meta.id },
             }),
           });
@@ -381,6 +382,11 @@ export function injectCM6Styles(doc: Document) {
       border-bottom: 2px solid var(--color-accent);
       padding-bottom: 1px;
       cursor: pointer;
+    }
+    /* Semantic (meaning-lifted) suggestions get a dotted underline so it's clear
+       why they were suggested vs a literal text match. */
+    .auto-linker-suggestion--semantic {
+      border-bottom-style: dotted;
     }
 
     /* Reset CodeMirror's tooltip chrome (light bg + arrow). We tag the wrapper
