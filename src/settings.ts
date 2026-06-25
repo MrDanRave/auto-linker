@@ -205,7 +205,7 @@ export class AutoLinkerSettingTab extends PluginSettingTab {
       .addButton((btn) =>
         btn
           .setButtonText("Forget")
-          .setDestructive()
+          .setWarning()   // setDestructive() needs a newer app than minAppVersion 1.4.0
           .onClick(async () => {
             const linker = this.plugin.autoLinker;
             if (!linker) return;
