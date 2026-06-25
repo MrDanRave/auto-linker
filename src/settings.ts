@@ -138,7 +138,6 @@ export class AutoLinkerSettingTab extends PluginSettingTab {
         slider
           .setLimits(0, 100, 1)
           .setValue(this.plugin.settings.sensitivity)
-          .setDynamicTooltip()
           .onChange(async (value) => {
             this.plugin.settings.sensitivity = value;
             await this.plugin.saveSettings();
@@ -175,7 +174,6 @@ export class AutoLinkerSettingTab extends PluginSettingTab {
           slider
             .setLimits(0, 100, 1)
             .setValue(this.plugin.settings.weights[key])
-            .setDynamicTooltip()
             .onChange(async (value) => {
               this.plugin.settings.weights[key] = value;
               await this.plugin.saveSettings();

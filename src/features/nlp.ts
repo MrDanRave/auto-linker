@@ -27,46 +27,6 @@ export interface CaseAnalysis {
 // Tokenize — Unicode-aware word extraction with exact offsets
 // ---------------------------------------------------------------------------
 
-export function tokenize(text: string): Token[] {
-  // Intl.Segmenter is the correct Unicode word-boundary tool; check at runtime
-  // because the tsconfig lib targets ES2018 and doesn't declare it.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const IntlAny = Intl as any;
-  const segmenterSupported = typeof IntlAny !== "undefined" && typeof IntlAny.Segmenter === "function";
-
-  if (segmenterSupported) {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const seg = new IntlAny.Segmenter(undefined, { granularity: "word" });
-    const tokens: Token[] = [];
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    for (const { segment, index, isWordLike } of seg.segment(text)) {
-      if (isWordLike) {
-        tokens.push({
-          text: segment as string,
-          lower: (segment as string).toLowerCase(),
-          start: index as number,
-          end: (index as number) + (segment as string).length,
-        });
-      }
-    }
-    return tokens;
-  }
-
-  // Fallback: Unicode letter/number regex (works in ES2018+ with `u` flag)
-  const re = /\p{L}[\p{L}\p{N}_-]*/gu;
-  const tokens: Token[] = [];
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(text)) !== null) {
-    tokens.push({
-      text: m[0],
-      lower: m[0].toLowerCase(),
-      start: m.index,
-      end: m.index + m[0].length,
-    });
-  }
-  return tokens;
-}
-
 // ---------------------------------------------------------------------------
 // Bucket-driven tokenization (Phase 4)
 //

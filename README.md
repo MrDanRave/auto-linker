@@ -75,4 +75,4 @@ Built with esbuild; the embedding backend (`@xenova/transformers`) is bundled an
 
 ## License
 
-MIT
+[GPL-3.0-only](LICENSE)

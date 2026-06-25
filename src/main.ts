@@ -6,9 +6,9 @@ import {
   buildAutoLinkerExtensions,
   scanFullNote,
   injectAutoLinkerStyles,
+  activeEditorView,
 } from "./features/autoLinker";
 import { injectCM6Styles } from "./shared/cm6";
-import { EditorView } from "@codemirror/view";
 
 export default class AutoLinkerPlugin extends Plugin {
   settings: AutoLinkerSettings = { ...DEFAULT_SETTINGS };
@@ -19,15 +19,14 @@ export default class AutoLinkerPlugin extends Plugin {
     await this.loadSettings();
     this.addSettingTab(new AutoLinkerSettingTab(this.app, this));
 
-    injectCM6Styles(document);
-    injectAutoLinkerStyles(document);
+    injectCM6Styles(activeDocument);
+    injectAutoLinkerStyles(activeDocument);
 
     // Popout windows have their own document — inject there too.
     this.registerEvent(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      this.app.workspace.on("window-open" as any, (...args: any[]) => {
-        const doc = (args[1] as Window | undefined)?.document ?? (args[0] as { doc?: Document })?.doc;
-        if (doc) { injectCM6Styles(doc); injectAutoLinkerStyles(doc); }
+      this.app.workspace.on("window-open", (_workspaceWindow, popoutWindow) => {
+        injectCM6Styles(popoutWindow.document);
+        injectAutoLinkerStyles(popoutWindow.document);
       })
     );
 
@@ -43,7 +42,7 @@ export default class AutoLinkerPlugin extends Plugin {
       // Configure the semantic tier if the user has it enabled (lazy model load).
       if (this.settings.enableSemantic) void this.applySemantic();
 
-      const persistFn    = () => linker.save(() => this.loadData(), (d) => this.saveData(d));
+      const persistFn    = () => { void linker.save(() => this.loadData(), (d) => this.saveData(d)); };
       const rescanActive = () => this.rescanActiveEditor();
       linker.setPersist(persistFn);
       linker.setRescan(rescanActive);
@@ -59,18 +58,17 @@ export default class AutoLinkerPlugin extends Plugin {
       this.registerEvent(
         this.app.workspace.on("file-open", (file) => {
           if (!file) return;
-          setTimeout(() => this.rescanActiveEditor(), 200);
+          window.setTimeout(() => this.rescanActiveEditor(), 200);
         })
       );
-
 
       // When a file is deleted, drop its rejections so a same-named note
       // created later is suggestable again.
       this.registerEvent(
-        this.app.vault.on("delete", async (file) => {
+        this.app.vault.on("delete", (file) => {
           if (!(file instanceof TFile)) return;
           if (linker.pruneRejectsForPath(file.path)) {
-            await persistFn();
+            persistFn();
             this.rescanActiveEditor();
           }
         })
@@ -121,7 +119,7 @@ export default class AutoLinkerPlugin extends Plugin {
     if (!this.autoLinker) return;
     const file = this.app.workspace.getActiveFile();
     if (!file) return;
-    const cm = (this.app.workspace.activeEditor?.editor as any)?.cm as EditorView | undefined;
+    const cm = activeEditorView(this.app);
     if (!cm) return;
     scanFullNote(cm, file, this.autoLinker, this.settings.sensitivity);
   }
@@ -132,7 +130,7 @@ export default class AutoLinkerPlugin extends Plugin {
   }
 
   async loadSettings() {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, (await this.loadData()) as Partial<AutoLinkerSettings>);
   }
 
   async saveSettings() {

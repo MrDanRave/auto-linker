@@ -11,14 +11,14 @@ const DEBOUNCE_MS = 2000;
 
 export class GraphScorer {
   private scores = new Map<string, number>();
-  private debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  private debounceTimer: number | null = null;
 
   constructor(private app: App) {}
 
   /** Full immediate rebuild — call on layout-ready and resolved events. */
   build() {
     if (this.debounceTimer !== null) {
-      clearTimeout(this.debounceTimer);
+      window.clearTimeout(this.debounceTimer);
       this.debounceTimer = null;
     }
     this.runPageRank();
@@ -26,8 +26,8 @@ export class GraphScorer {
 
   /** Debounced rebuild — call when a single file's metadata changes. */
   scheduleRebuild() {
-    if (this.debounceTimer !== null) clearTimeout(this.debounceTimer);
-    this.debounceTimer = setTimeout(() => {
+    if (this.debounceTimer !== null) window.clearTimeout(this.debounceTimer);
+    this.debounceTimer = window.setTimeout(() => {
       this.debounceTimer = null;
       this.runPageRank();
     }, DEBOUNCE_MS);
@@ -40,7 +40,7 @@ export class GraphScorer {
 
   destroy() {
     if (this.debounceTimer !== null) {
-      clearTimeout(this.debounceTimer);
+      window.clearTimeout(this.debounceTimer);
       this.debounceTimer = null;
     }
   }

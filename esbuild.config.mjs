@@ -1,6 +1,9 @@
 import esbuild from "esbuild";
 import process from "process";
-import builtins from "builtin-modules";
+import { builtinModules } from "module";
+
+// Node built-ins (both bare and node:-prefixed) are provided by Obsidian's runtime.
+const builtins = [...builtinModules, ...builtinModules.map((m) => `node:${m}`)];
 
 const prod = process.argv[2] === "production";
 

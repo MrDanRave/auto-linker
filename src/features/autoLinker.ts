@@ -1,4 +1,4 @@
-import { App, TFile, Component, MarkdownRenderer } from "obsidian";
+import { App, TFile, Component, MarkdownRenderer, EventRef, CachedMetadata } from "obsidian";
 import { EditorView } from "@codemirror/view";
 import {
   Token, analyzeCase, detectLang, stem, commonness,
@@ -639,7 +639,7 @@ export class AutoLinker {
   private enableSemantic = false;
   private rescanCb?: () => void;
   private embeddingsPath?: string;
-  private embSaveTimer: ReturnType<typeof setTimeout> | null = null;
+  private embSaveTimer: number | null = null;
 
   constructor(private app: App, buckets: BucketConfig = DEFAULT_BUCKETS) {
     this.buckets     = buckets;
@@ -692,8 +692,8 @@ export class AutoLinker {
 
   private scheduleSaveEmbeddings() {
     if (!this.embeddingsPath || !this.semantic) return;
-    if (this.embSaveTimer) clearTimeout(this.embSaveTimer);
-    this.embSaveTimer = setTimeout(() => {
+    if (this.embSaveTimer) window.clearTimeout(this.embSaveTimer);
+    this.embSaveTimer = window.setTimeout(() => {
       this.embSaveTimer = null;
       const si = this.semantic;
       if (!this.embeddingsPath || !si) return;
@@ -758,8 +758,7 @@ export class AutoLinker {
     await saveData(existing);
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  registerMetadataEvents(registerEvent: (e: any) => void) {
+  registerMetadataEvents(registerEvent: (e: EventRef) => void) {
     registerEvent(this.app.metadataCache.on("changed", (file, _data, cache) => {
       // remove-then-add so renamed/removed aliases don't linger
       this.titleIndex.removeFile(file);
@@ -823,8 +822,7 @@ export class AutoLinker {
   }
 
   /** #1: learn surface→target from links the user wrote, e.g. [[Valuable|value]]. */
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private observeLinks(file: TFile, cache: any) {
+  private observeLinks(file: TFile, cache: CachedMetadata | null) {
     const links = cache?.links;
     if (!Array.isArray(links)) return;
     let changed = false;
@@ -903,7 +901,7 @@ export class AutoLinker {
 
   destroy() {
     this.graphScorer.destroy();
-    if (this.embSaveTimer) clearTimeout(this.embSaveTimer);
+    if (this.embSaveTimer) window.clearTimeout(this.embSaveTimer);
   }
 
   // ── Reject lifecycle ──────────────────────────────────────────────────────
@@ -1021,8 +1019,8 @@ export class RejectStagingPanel {
 
   private mount() {
     if (this.el) return;
-    this.el = document.body.createEl("div", { cls: "auto-linker-reject-panel" });
-    requestAnimationFrame(() => this.el?.addClass("auto-linker-reject-panel--visible"));
+    this.el = activeDocument.body.createEl("div", { cls: "auto-linker-reject-panel" });
+    window.requestAnimationFrame(() => this.el?.addClass("auto-linker-reject-panel--visible"));
   }
 
   private render() {
@@ -1127,7 +1125,7 @@ export class RejectStagingPanel {
     const el = this.el;
     this.el  = null;
     this.minimized = false;
-    setTimeout(() => el.remove(), 300);
+    window.setTimeout(() => el.remove(), 300);
   }
 
   destroy() { this.el?.remove(); this.el = null; this.items = []; }
@@ -1150,14 +1148,13 @@ async function renderPreview(
   const excerpt = content.split("\n").slice(0, 5).join("\n").trim() || "(empty note)";
 
   el.empty();
-  // MarkdownRenderer.render is the modern API; fall back to renderMarkdown.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const MR = MarkdownRenderer as any;
-  if (typeof MR.render === "function") {
-    await MR.render(app, excerpt, el, targetPath, component);
-  } else {
-    await MR.renderMarkdown(excerpt, el, targetPath, component);
-  }
+  await MarkdownRenderer.render(app, excerpt, el, targetPath, component);
+}
+
+/** The CodeMirror 6 EditorView behind the active editor (Obsidian doesn't expose
+ *  `cm` on its public Editor type, so we read it through a narrow structural type). */
+export function activeEditorView(app: App): EditorView | undefined {
+  return (app.workspace.activeEditor?.editor as { cm?: EditorView } | undefined)?.cm;
 }
 
 // ---------------------------------------------------------------------------
@@ -1174,7 +1171,7 @@ export function buildAutoLinkerExtensions(
 ) {
   const callbacks: WidgetCallbacks = {
     onApprove: (meta: DecorationMeta) => {
-      const view = (app.workspace.activeEditor?.editor as any)?.cm as EditorView | undefined;
+      const view = activeEditorView(app);
       if (!view) return;
       const data = meta.data as { span: string; targetName: string; targetPath: string };
       const replacement = `[[${data.targetPath.replace(/\.md$/, "")}|${data.span}]]`;
@@ -1188,7 +1185,7 @@ export function buildAutoLinkerExtensions(
     },
 
     onReject: (meta: DecorationMeta) => {
-      const view = (app.workspace.activeEditor?.editor as any)?.cm as EditorView | undefined;
+      const view = activeEditorView(app);
       if (!view) return;
       const data = meta.data as { span: string; targetPath: string; targetName: string; matchType?: MatchType };
       const matchType: MatchType = data.matchType ?? "literal";

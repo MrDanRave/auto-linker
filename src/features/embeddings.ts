@@ -45,12 +45,25 @@ export interface Embedder {
   embed(text: string): Promise<Float32Array | null>;
 }
 
+// Minimal structural type for the parts of @xenova/transformers we touch — lets
+// us avoid `any` (and an eslint-disable) for the lazily-imported module.
+type FeatureExtractor = (text: string, opts: { pooling: string; normalize: boolean }) => Promise<{ data: Float32Array | number[] }>;
+interface TransformersModule {
+  env: {
+    allowRemoteModels: boolean;
+    allowLocalModels: boolean;
+    localModelPath: string;
+    backends?: { onnx?: { wasm?: { numThreads: number; wasmPaths: string } } };
+  };
+  pipeline: (task: string, model: string) => Promise<FeatureExtractor>;
+}
+
 /**
  * transformers.js feature-extraction backend. Loaded lazily so main.js never
  * pays for it until the user enables semantics, and so its absence is survivable.
  */
 export class TransformersEmbedder implements Embedder {
-  private pipe: ((t: string, o: unknown) => Promise<{ data: Float32Array }>) | null = null;
+  private pipe: FeatureExtractor | null = null;
   private status: "off" | "loading" | "ready" | "error" = "off";
   private lastError = "";
 
@@ -68,8 +81,7 @@ export class TransformersEmbedder implements Embedder {
     this.status = "loading";
     try {
       // Bundled (see esbuild config); imported lazily so init cost is paid only on enable.
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const tf: any = await import("@xenova/transformers");
+      const tf = (await import("@xenova/transformers")) as unknown as TransformersModule;
       // Use the wasm runtime, single-threaded (Electron renderer has no
       // cross-origin isolation for multithreaded SharedArrayBuffer wasm), and
       // load the wasm binaries from the matching CDN build.

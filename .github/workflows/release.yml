@@ -7,6 +7,8 @@ on:
 
 permissions:
   contents: write
+  id-token: write       # required for build provenance attestations
+  attestations: write   # lets users cryptographically verify release assets
 
 jobs:
   release:
@@ -25,6 +27,11 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: main.js
+
       - name: Create GitHub release
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -32,5 +39,6 @@ jobs:
           tag="${GITHUB_REF#refs/tags/}"
           gh release create "$tag" \
             --title "$tag" \
+            --notes "Auto Linker $tag. See the commit history and SEMANTIC_PLAN.md for what changed." \
             --draft \
             main.js manifest.json versions.json

@@ -158,7 +158,7 @@ function makeTooltipForId(
       above: true,
       arrow: false,
       create: () => {
-        const dom = document.createElement("div");
+        const dom = activeDocument.createElement("div");
         dom.className = "auto-linker-tooltip";
 
         const data       = hit.meta.data as { targetName?: string; targetPath?: string } | undefined;
@@ -187,19 +187,19 @@ function makeTooltipForId(
         // repositions the tooltip (which used to shift the eye out from under
         // the cursor and flip the whole tooltip above/below at random).
         let peek: HTMLElement | null = null;
-        let peekHideTimer: ReturnType<typeof setTimeout> | null = null;
+        let peekHideTimer: number | null = null;
 
         const removePeek = () => {
-          if (peekHideTimer !== null) { clearTimeout(peekHideTimer); peekHideTimer = null; }
+          if (peekHideTimer !== null) { window.clearTimeout(peekHideTimer); peekHideTimer = null; }
           peek?.remove();
           peek = null;
         };
         const cancelPeekHide = () => {
-          if (peekHideTimer !== null) { clearTimeout(peekHideTimer); peekHideTimer = null; }
+          if (peekHideTimer !== null) { window.clearTimeout(peekHideTimer); peekHideTimer = null; }
         };
         const schedulePeekHide = () => {
           if (peekHideTimer !== null) return;
-          peekHideTimer = setTimeout(removePeek, 160);
+          peekHideTimer = window.setTimeout(removePeek, 160);
         };
 
         const positionPeek = () => {
@@ -248,8 +248,8 @@ function makeTooltipForId(
 
           const done = callbacks.onPreview(targetPath, content)
             .catch(() => { content.setText("(could not load preview)"); });
-          requestAnimationFrame(positionPeek);
-          done.finally(() => positionPeek());
+          window.requestAnimationFrame(positionPeek);
+          void done.finally(() => positionPeek());
         };
 
         eye.addEventListener("mouseenter", showPeek);
@@ -286,7 +286,7 @@ export function createSuggestionTooltip(field: SuggestionField, callbacks: Widge
 
   const hoverPlugin = ViewPlugin.fromClass(
     class {
-      private hideTimer: ReturnType<typeof setTimeout> | null = null;
+      private hideTimer: number | null = null;
       private readonly onMove: (e: MouseEvent) => void;
 
       constructor(private view: EditorView) {
@@ -295,12 +295,12 @@ export function createSuggestionTooltip(field: SuggestionField, callbacks: Widge
       }
 
       private cancelHide() {
-        if (this.hideTimer !== null) { clearTimeout(this.hideTimer); this.hideTimer = null; }
+        if (this.hideTimer !== null) { window.clearTimeout(this.hideTimer); this.hideTimer = null; }
       }
 
       private scheduleHide() {
         if (this.hideTimer !== null) return;
-        this.hideTimer = setTimeout(() => {
+        this.hideTimer = window.setTimeout(() => {
           this.hideTimer = null;
           if (this.view.state.field(hoveredField, false)) {
             this.view.dispatch({ effects: setHoveredEffect.of(null) });
@@ -346,11 +346,11 @@ export type OnDirtyRegion = (view: EditorView, region: DirtyRegion) => void;
 export function createDebouncedViewPlugin(onDirty: OnDirtyRegion, debounceMs = 600) {
   return ViewPlugin.fromClass(
     class {
-      private timer: ReturnType<typeof setTimeout> | null = null;
+      private timer: number | null = null;
 
       update(update: ViewUpdate) {
         if (!update.docChanged) return;
-        if (this.timer !== null) clearTimeout(this.timer);
+        if (this.timer !== null) window.clearTimeout(this.timer);
 
         let from = update.view.viewport.from;
         let to   = update.view.viewport.to;
@@ -361,10 +361,10 @@ export function createDebouncedViewPlugin(onDirty: OnDirtyRegion, debounceMs = 6
 
         const region: DirtyRegion = { from, to };
         const view = update.view;
-        this.timer = setTimeout(() => { this.timer = null; onDirty(view, region); }, debounceMs);
+        this.timer = window.setTimeout(() => { this.timer = null; onDirty(view, region); }, debounceMs);
       }
 
-      destroy() { if (this.timer !== null) clearTimeout(this.timer); }
+      destroy() { if (this.timer !== null) window.clearTimeout(this.timer); }
     }
   );
 }
