@@ -976,6 +976,24 @@ export class AutoLinker {
       (r) => !(r.span === span && r.targetPath === targetPath && r.notePath === notePath)
     );
   }
+
+  /** Restore (remove) every rejection of a scope: "vault" = vault-bound (notePath
+   *  null), "note" = note-bound (notePath set). Returns how many were removed. */
+  restoreAllRejects(scope: "vault" | "note"): number {
+    const before = this.rejectList.length;
+    this.rejectList = this.rejectList.filter(
+      (r) => (scope === "vault" ? r.notePath !== null : r.notePath === null)
+    );
+    return before - this.rejectList.length;
+  }
+
+  /** Forget all learned acceptance history (the Learned-preference signal).
+   *  Does not touch learned aliases or the reject list. Returns count cleared. */
+  forgetLearnedPreferences(): number {
+    const n = this.acceptCounts.size;
+    this.acceptCounts.clear();
+    return n;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1400,6 +1418,14 @@ export function injectAutoLinkerStyles(doc: Document) {
       font-weight: var(--font-semibold, 600);
       color: var(--text-normal);
       border-top: 1px solid var(--background-modifier-border);
+    }
+    /* "Restore all" pinned to the right of a group's summary. */
+    .auto-linker-restore-all {
+      margin-left: auto;
+      font-size: 12px;
+      padding: 2px 10px;
+      border-radius: 4px;
+      cursor: pointer;
     }
     .auto-linker-reject-subdetails { margin-left: 18px; }
     .auto-linker-reject-subdetails > summary {

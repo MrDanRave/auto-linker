@@ -201,6 +201,23 @@ export class AutoLinkerSettingTab extends PluginSettingTab {
         }),
     );
 
+    new Setting(containerEl)
+      .setName("Forget learned preferences")
+      .setDesc("Clear the history of suggestions you've accepted (the Learned-preference signal). Does not affect learned aliases or rejections.")
+      .addButton((btn) =>
+        btn
+          .setButtonText("Forget")
+          .setWarning()
+          .onClick(async () => {
+            const linker = this.plugin.autoLinker;
+            if (!linker) return;
+            const n = linker.forgetLearnedPreferences();
+            await this.plugin.persistAutoLinker();
+            this.plugin.rescanActiveEditor();
+            new Notice(`Forgot ${n} learned preference${n === 1 ? "" : "s"}.`);
+          }),
+      );
+
     // ── Tokenizer buckets ─────────────────────────────────────────────────
     new Setting(containerEl).setName("Tokenizer").setHeading();
     containerEl.createEl("p", {
@@ -330,6 +347,7 @@ export class AutoLinkerSettingTab extends PluginSettingTab {
 
     // Vault Rejections — split into literal / semantic sub-groups
     const vaultDetails = this.makeDetails(containerEl, "vault", `Vault Rejections (${vaultRejects.length})`, true);
+    if (vaultRejects.length > 0) this.addRestoreAll(vaultDetails, "vault");
     if (vaultRejects.length === 0) {
       vaultDetails.createEl("p", { cls: "auto-linker-settings-empty", text: "None." });
     } else {
@@ -353,6 +371,7 @@ export class AutoLinkerSettingTab extends PluginSettingTab {
     }
 
     const noteDetails = this.makeDetails(containerEl, "notes", `Note Rejections (${noteRejects.length})`, true);
+    if (noteRejects.length > 0) this.addRestoreAll(noteDetails, "note");
     if (groups.size === 0) {
       noteDetails.createEl("p", { cls: "auto-linker-settings-empty", text: "None." });
     } else {
@@ -392,6 +411,27 @@ export class AutoLinkerSettingTab extends PluginSettingTab {
     });
 
     return details;
+  }
+
+  /** Pin a "Restore all" button to the right of a group's summary, scoped to
+   *  that group (vault-wide vs note-specific). Clicking it must not toggle the group. */
+  private addRestoreAll(details: HTMLElement, scope: "vault" | "note") {
+    const summary = details.querySelector("summary");
+    if (!summary) return;
+    const btn = summary.createEl("button", { cls: "auto-linker-restore-all", text: "Restore all" });
+    btn.setAttribute("aria-label", scope === "vault"
+      ? "Restore all vault-wide rejections"
+      : "Restore all note-specific rejections");
+    btn.addEventListener("click", async (e) => {
+      e.preventDefault();   // don't toggle the <details>
+      e.stopPropagation();
+      const linker = this.plugin.autoLinker;
+      if (!linker) return;
+      linker.restoreAllRejects(scope);
+      await this.plugin.persistAutoLinker();
+      this.plugin.rescanActiveEditor();
+      this.display();
+    });
   }
 
   private renderRow(parent: HTMLElement, entry: RejectRow) {
