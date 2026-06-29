@@ -139,11 +139,22 @@ interface TokenEdge {
   exact: boolean;
 }
 
+/** All distinct contiguous token runs of length ≥ 2 within `tokens` (single
+ *  tokens are indexed separately in byToken). Used to match title sub-phrases. */
+function subPhraseKeys(tokens: string[]): string[] {
+  const keys = new Set<string>();
+  const L = tokens.length;
+  for (let i = 0; i < L; i++)
+    for (let len = 2; i + len <= L; len++)
+      keys.add(tokens.slice(i, i + len).join(" "));
+  return [...keys];
+}
+
 export class TitleIndex {
   private index = new Map<string, string>();              // lowerTitle|alias → path (kept for getPath compatibility)
   private unitsByPath = new Map<string, Unit[]>();          // path → its units
   private byToken = new Map<string, TokenEdge[]>();         // lookup token (exact or base) → edges
-  private byPhrase = new Map<string, Unit[]>();             // full phraseKey → units
+  private bySubPhrase = new Map<string, Unit[]>();          // every contiguous ≥2-token run → units
   private firstChar = new Map<string, Set<string>>();       // token[0] → set of lookup tokens (fuzzy prefilter)
   private docFreq = new Map<string, number>();             // token → # notes whose title contains it (exact+base)
   private _maxPhraseLen = 1;
@@ -179,9 +190,11 @@ export class TitleIndex {
     for (const unit of units) {
       this._maxPhraseLen = Math.max(this._maxPhraseLen, unit.tokens.length);
 
-      let arr = this.byPhrase.get(unit.phraseKey);
-      if (!arr) { arr = []; this.byPhrase.set(unit.phraseKey, arr); }
-      arr.push(unit);
+      for (const key of subPhraseKeys(unit.tokens)) {
+        let arr = this.bySubPhrase.get(key);
+        if (!arr) { arr = []; this.bySubPhrase.set(key, arr); }
+        arr.push(unit);
+      }
 
       for (const token of unit.tokens) {
         noteTokens.add(token);                       // df counts all tokens (sane IDF)
@@ -214,11 +227,12 @@ export class TitleIndex {
 
     const noteTokens = new Set<string>();
     for (const unit of units) {
-      const arr = this.byPhrase.get(unit.phraseKey);
-      if (arr) {
+      for (const key of subPhraseKeys(unit.tokens)) {
+        const arr = this.bySubPhrase.get(key);
+        if (!arr) continue;
         const kept = arr.filter((u) => u !== unit);
-        if (kept.length) this.byPhrase.set(unit.phraseKey, kept);
-        else this.byPhrase.delete(unit.phraseKey);
+        if (kept.length) this.bySubPhrase.set(key, kept);
+        else this.bySubPhrase.delete(key);
       }
       for (const token of unit.tokens) {
         noteTokens.add(token);
@@ -246,7 +260,8 @@ export class TitleIndex {
   // ── Lookup / scoring helpers ───────────────────────────────────────────────
 
   /** Full-unit matches for a contiguous n-gram (size ≥ 1). */
-  getUnitsByPhrase(phraseKey: string): Unit[] | undefined { return this.byPhrase.get(phraseKey); }
+  /** Units in which `key` (a ≥2-token run) appears as a contiguous sub-phrase. */
+  getUnitsBySubPhrase(key: string): Unit[] | undefined { return this.bySubPhrase.get(key); }
 
   /** Partial / base matches for a single token. */
   getEdges(token: string): TokenEdge[] | undefined { return this.byToken.get(token); }
@@ -303,7 +318,7 @@ export class TitleIndex {
     this.index.clear();
     this.unitsByPath.clear();
     this.byToken.clear();
-    this.byPhrase.clear();
+    this.bySubPhrase.clear();
     this.firstChar.clear();
     this.docFreq.clear();
     this._maxPhraseLen = 1;
@@ -412,6 +427,9 @@ export function scoreRegion(
     );
 
   const caseOf = (from: number, to: number, tokIdxs: number[]): number => {
+    // Case is only a meaningful signal for a single token (acronym "AND" vs "and").
+    // For a multi-word span it's incidental (e.g. "3 - CAD" reads ALL-CAPS), so neutral.
+    if (tokIdxs.length > 1) return 0;
     const spanText = text.slice(from, to);
     const tok: Token = { text: spanText, lower: spanText.toLowerCase(), start: from, end: to };
     const c = analyzeCase(tok, text);
@@ -442,23 +460,35 @@ export function scoreRegion(
       for (let j = i; j < i + size; j++) tokIdxs.push(j);
       const span = text.slice(from, to);
 
-      // Full-unit (phrase) match → lexScore 1.0
       const phraseKey = stems.slice(i, i + size).join(" ");
-      const fullUnits = index.getUnitsByPhrase(phraseKey);
-      if (fullUnits) {
-        for (const unit of fullUnits) {
-          if (unit.path === activeFilePath) continue;
-          cands.push({ from, to, span, targetPath: unit.path, lexScore: 1.0, tokIdxs, stemKey: phraseKey });
+
+      // Multi-word match: a contiguous run of a title's tokens. Full title → 1.0;
+      // a proper sub-phrase → IDF-weighted coverage of the title (+ exact bonus).
+      if (size >= 2) {
+        const subUnits = index.getUnitsBySubPhrase(phraseKey);
+        if (subUnits) {
+          for (const unit of subUnits) {
+            if (unit.path === activeFilePath) continue;
+            let lex: number;
+            if (size === unit.tokens.length) {
+              lex = 1.0;
+            } else {
+              let matchedIdf = 0;
+              for (let k = i; k < i + size; k++) matchedIdf += index.idfWeight(stems[k]);
+              const cov = Math.min(1, matchedIdf / index.unitIdfSum(unit));
+              lex = cov + (1 - cov) * EXACT_TOKEN_BONUS;
+            }
+            cands.push({ from, to, span, targetPath: unit.path, lexScore: lex, tokIdxs, stemKey: phraseKey });
+          }
         }
       }
 
-      // Single-token partial / base match → IDF-weighted coverage of the unit
+      // Single-token match → IDF-weighted coverage of the unit (full 1-token title → 1.0)
       if (size === 1) {
         const edges = index.getEdges(stems[i]);
         if (edges) {
           for (const e of edges) {
             if (e.unit.path === activeFilePath) continue;
-            if (e.unit.tokens.length === 1 && e.exact) continue; // already covered as a full unit above
             const coverage = Math.min(1, index.idfWeight(e.token) / index.unitIdfSum(e.unit));
             // Exact token → lift above raw coverage; base (digit father) → penalize.
             const lex = e.exact
