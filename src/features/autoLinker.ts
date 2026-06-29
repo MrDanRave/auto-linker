@@ -13,6 +13,7 @@ import {
   removeBySpanTargetEffect,
   DecorationMeta,
   WidgetCallbacks,
+  ApproveMods,
   createDecoField,
   createSuggestionTooltip,
   createDebouncedViewPlugin,
@@ -156,17 +157,15 @@ export class TitleIndex {
 
   setBuckets(b: BucketConfig) { this.buckets = b; }
 
-  /** Decompose a name into units of stemmed tokens (≥ MIN_TOKEN_LEN). */
+  /** Decompose a name into units. Every token is kept so the unit's phrase matches
+   *  the typed text verbatim (incl. short tokens like "3" in "Payment method 3 - CAD");
+   *  only tokens ≥ MIN_TOKEN_LEN are *indexed* for standalone single-token lookup. */
   private nameToUnits(path: string, name: string): Unit[] {
     const lang  = detectLang(name);
     const atoms = tokenizeAtoms(name, this.buckets);
     const units: Unit[] = [];
     for (const unitAtoms of splitUnits(atoms)) {
-      const tokens: string[] = [];
-      for (const a of unitAtoms) {
-        if (a.text.length < MIN_TOKEN_LEN) continue;
-        tokens.push(stem(a.lower, lang));
-      }
+      const tokens = unitAtoms.map((a) => stem(a.lower, lang));
       if (tokens.length) units.push({ path, tokens, phraseKey: tokens.join(" ") });
     }
     return units;
@@ -185,8 +184,9 @@ export class TitleIndex {
       arr.push(unit);
 
       for (const token of unit.tokens) {
+        noteTokens.add(token);                       // df counts all tokens (sane IDF)
+        if (token.length < MIN_TOKEN_LEN) continue;  // but don't index 1-char tokens standalone
         this.pushEdge(token, { unit, token, exact: true });
-        noteTokens.add(token);
         const base = extractBase(token);
         if (base) {
           this.pushEdge(base, { unit, token, exact: false });
@@ -222,6 +222,7 @@ export class TitleIndex {
       }
       for (const token of unit.tokens) {
         noteTokens.add(token);
+        if (token.length < MIN_TOKEN_LEN) continue;
         const base = extractBase(token);
         if (base) noteTokens.add(base);
       }
@@ -1060,10 +1061,13 @@ export class RejectStagingPanel {
 
       for (const item of groupItems) {
         const row = body.createEl("div", { cls: "auto-linker-reject-panel-row" });
-        row.createEl("span", {
+        const label = row.createEl("span", {
           cls:  "auto-linker-reject-panel-label",
           text: `"${item.span}" → ${item.targetName}`,
+          attr: { title: "Click to expand" },
         });
+        // Truncated to one line with an ellipsis; click toggles full multi-line text.
+        label.addEventListener("click", () => label.toggleClass("auto-linker-reject-panel-label--expanded", !label.hasClass("auto-linker-reject-panel-label--expanded")));
 
         const yes     = row.createEl("button", { cls: "auto-linker-reject-btn auto-linker-reject-yes",     text: "Yes" });
         const no      = row.createEl("button", { cls: "auto-linker-reject-btn auto-linker-reject-no",      text: "No"  });
@@ -1170,16 +1174,33 @@ export function buildAutoLinkerExtensions(
   component: Component,
   getSensitivity: () => number = () => SCORING.threshold
 ) {
+  const decoField = createDecoField();
   const callbacks: WidgetCallbacks = {
-    onApprove: (meta: DecorationMeta) => {
+    onApprove: (meta: DecorationMeta, mods: ApproveMods) => {
       const view = activeEditorView(app);
       if (!view) return;
       const data = meta.data as { span: string; targetName: string; targetPath: string };
-      const replacement = `[[${data.targetPath.replace(/\.md$/, "")}|${data.span}]]`;
+      const target = data.targetPath.replace(/\.md$/, "");
+      // Ctrl/Cmd → insert the bare link [[Target]] instead of [[Target|span]].
+      const linkFor = (span: string) => (mods.asIs ? `[[${target}]]` : `[[${target}|${span}]]`);
+
+      // Shift → apply to every repeat of this (span → target) in the note; else just this one.
+      let metas: DecorationMeta[] = [meta];
+      if (mods.all) {
+        metas = view.state.field(decoField)
+          .map((s) => s.meta)
+          .filter((m) => {
+            const d = m.data as { span?: string; targetPath?: string };
+            return d?.span === data.span && d?.targetPath === data.targetPath;
+          });
+      }
+      // Replace right-to-left so earlier offsets stay valid within one transaction.
+      metas.sort((a, b) => b.from - a.from);
       view.dispatch({
-        changes: { from: meta.from, to: meta.to, insert: replacement },
-        effects: [removeDecoEffect.of({ id: meta.id })],
+        changes: metas.map((m) => ({ from: m.from, to: m.to, insert: linkFor((m.data as { span: string }).span) })),
+        effects: metas.map((m) => removeDecoEffect.of({ id: m.id })),
       });
+
       // Learn: this (span → target) was wanted. Boosts future ranking.
       linker.recordAccept(data.span, data.targetPath);
       persistFn();
@@ -1219,7 +1240,6 @@ export function buildAutoLinkerExtensions(
     },
   };
 
-  const decoField   = createDecoField();
   const tooltip     = createSuggestionTooltip(decoField, callbacks);
   const dirtyPlugin = createDebouncedViewPlugin((view: EditorView, region: DirtyRegion) => {
     const activeFile = app.workspace.getActiveFile();
@@ -1343,11 +1363,20 @@ export function injectAutoLinkerStyles(doc: Document) {
     }
     .auto-linker-reject-panel-label {
       flex: 1;
+      min-width: 0;
       font-size: 13px;
       color: var(--text-normal);
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+      cursor: pointer;
+    }
+    /* Clicking the truncated label expands it to full, wrapped text. */
+    .auto-linker-reject-panel-label--expanded {
+      overflow: visible;
+      text-overflow: clip;
+      white-space: normal;
+      overflow-wrap: anywhere;
     }
     .auto-linker-reject-panel-footer {
       display: flex;

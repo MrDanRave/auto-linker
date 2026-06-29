@@ -40,8 +40,12 @@ export const removeBySpanTargetEffect = StateEffect.define<{ span: string; targe
 
 export type WidgetAction = "approve" | "reject";
 
+/** Modifier keys held while approving: asIs = Ctrl ([[Target]] not [[Target|span]]);
+ *  all = Shift (approve every repeat of this suggestion in the note). */
+export interface ApproveMods { asIs: boolean; all: boolean; }
+
 export interface WidgetCallbacks {
-  onApprove: (meta: DecorationMeta) => void;
+  onApprove: (meta: DecorationMeta, mods: ApproveMods) => void;
   onReject:  (meta: DecorationMeta) => void;
   /** Render a markdown preview of the target note into the given element. */
   onPreview: (targetPath: string, el: HTMLElement) => Promise<void>;
@@ -179,7 +183,7 @@ function makeTooltipForId(
         reject.addEventListener("mousedown",  noFocus);
         eye.addEventListener("mousedown",     noFocus);
 
-        approve.addEventListener("click", () => callbacks.onApprove(hit.meta));
+        approve.addEventListener("click", (e) => callbacks.onApprove(hit.meta, { asIs: e.ctrlKey || e.metaKey, all: e.shiftKey }));
         reject.addEventListener("click",  () => callbacks.onReject(hit.meta));
 
         // ── Peek: a separate floating window anchored to the eye button. Kept
